@@ -44,6 +44,9 @@ class NassalMonitor:
         self.session: Optional[aiohttp.ClientSession] = None
         self.monitoring_groups: List[Dict] = self.load_groups()
         self.monitoring_active: bool = False
+        
+        # Кэш игроков: playerId -> данные
+        self.player_cache: Dict[str, Dict] = {}
     
     def load_groups(self) -> List[Dict]:
         try:
@@ -80,9 +83,9 @@ class NassalMonitor:
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
     
     async def get_participants_data(self) -> Dict:
-        """Получает данные всех участников через API"""
+        """Получает данные всех участников через API с кэшированием"""
         try:
-            logger.info(" Запрашиваю данные с API...")
+            logger.info("🌐 Запрашиваю данные с API...")
             
             if not self.session:
                 self.session = aiohttp.ClientSession()
@@ -97,90 +100,112 @@ class NassalMonitor:
                 raw_count = data.get('data', {}).get('count', 0)
                 raw_array = data.get('data', {}).get('array', [])
                 
-                logger.info(f" API вернул {raw_count} участников (массив: {len(raw_array)})")
+                logger.info(f"📊 API вернул {raw_count} участников (массив: {len(raw_array)})")
                 
                 for idx, item in enumerate(raw_array):
                     try:
-                        # ВАЖНО: Проверяем что item не None
                         if item is None:
                             logger.warning(f"⚠️ [{idx}] item равен None, пропускаем")
                             continue
                         
                         player = item.get('player')
                         
-                        # ВАЖНО: Проверяем что player не None
+                        # Если player = null, пытаемся найти в кэше
                         if player is None:
-                            logger.warning(f"⚠️ [{idx}] player равен None!")
-                            logger.warning(f"   Сырые данные item: {json.dumps(item, ensure_ascii=False)[:500]}")
-                            
-                            # Пытаемся получить имя из других полей
-                            # Иногда имя может быть в currentAuctionResult или других местах
                             auction_result = item.get('currentAuctionResult') or {}
-                            
-                            # Проверяем есть ли playerId и можем ли мы сопоставить
                             player_id = auction_result.get('playerId', '')
                             
-                            if player_id:
-                                logger.warning(f"   playerId найден: {player_id}")
+                            if player_id and player_id in self.player_cache:
+                                cached = self.player_cache[player_id]
+                                name = cached['name']
+                                points = cached['points']
+                                logger.info(f" [{idx}] {name} - используем кэш (player=null)")
+                                
+                                # Получаем актуальную игру из auction_result
+                                game_title = auction_result.get('title', '')
+                                game_type = auction_result.get('type', '')
+                                game_reward = auction_result.get('ggpReward', 0)
+                                game_penalty = auction_result.get('ggpPenalty', 0)
+                                timer_started = auction_result.get('timerStartedAt', '')
+                                
+                                required_action = item.get('requiredAction') or {}
+                                action_kind = required_action.get('kind', '') if required_action else ''
+                                
+                                participants[name] = {
+                                    'points': points,
+                                    'selected': False,
+                                    'game_title': game_title,
+                                    'game_type': game_type,
+                                    'game_reward': game_reward,
+                                    'game_penalty': game_penalty,
+                                    'action_kind': action_kind,
+                                    'timer_started': timer_started,
+                                    'timestamp': time.time()
+                                }
+                            else:
+                                logger.warning(f"⚠️ [{idx}] player=null и нет в кэше, пропускаем")
+                                continue
+                        else:
+                            # Нормальный случай - обновляем кэш
+                            raw_name = player.get('name', '')
+                            name = raw_name.strip() if raw_name else ''
+                            name_lower = name.lower()
                             
-                            # Пропускаем этого участника так как нет имени
-                            continue
-                        
-                        raw_name = player.get('name', '')
-                        
-                        # Нормализуем имя
-                        name = raw_name.strip() if raw_name else ''
-                        name_lower = name.lower()
-                        
-                        if not name:
-                            logger.warning(f"️ [{idx}] Пропущен участник без имени")
-                            continue
-                        
-                        # Проверяем что имя есть в нашем списке
-                        if name_lower not in VALID_NAMES:
-                            logger.warning(f"⚠️ [{idx}] Неизвестный участник: '{raw_name}' (lower: '{name_lower}')")
-                            continue
-                        
-                        # Очки
-                        points = player.get('ggp', player.get('points', player.get('score', 0)))
-                        
-                        # Информация об игре/действии
-                        auction_result = item.get('currentAuctionResult') or {}
-                        game_title = auction_result.get('title', '') if auction_result else ''
-                        game_type = auction_result.get('type', '') if auction_result else ''
-                        game_reward = auction_result.get('ggpReward', 0) if auction_result else 0
-                        game_penalty = auction_result.get('ggpPenalty', 0) if auction_result else 0
-                        
-                        # Время начала
-                        timer_started = auction_result.get('timerStartedAt', '') if auction_result else ''
-                        
-                        required_action = item.get('requiredAction') or {}
-                        action_kind = required_action.get('kind', '') if required_action else ''
-                        
-                        participants[name] = {
-                            'points': points,
-                            'selected': False,
-                            'game_title': game_title,
-                            'game_type': game_type,
-                            'game_reward': game_reward,
-                            'game_penalty': game_penalty,
-                            'action_kind': action_kind,
-                            'timer_started': timer_started,
-                            'timestamp': time.time()
-                        }
-                        
-                        logger.debug(f"  [{idx}] {name}: очки={points}, игра='{game_title}'")
+                            if not name:
+                                logger.warning(f"⚠️ [{idx}] Пропущен участник без имени")
+                                continue
+                            
+                            if name_lower not in VALID_NAMES:
+                                logger.warning(f"⚠️ [{idx}] Неизвестный участник: '{raw_name}'")
+                                continue
+                            
+                            points = player.get('ggp', player.get('points', player.get('score', 0)))
+                            
+                            # Сохраняем в кэш
+                            player_id = player.get('id', '')
+                            if player_id:
+                                self.player_cache[player_id] = {
+                                    'name': name,
+                                    'points': points,
+                                    'timestamp': time.time()
+                                }
+                            
+                            # Информация об игре/действии
+                            auction_result = item.get('currentAuctionResult') or {}
+                            game_title = auction_result.get('title', '') if auction_result else ''
+                            game_type = auction_result.get('type', '') if auction_result else ''
+                            game_reward = auction_result.get('ggpReward', 0) if auction_result else 0
+                            game_penalty = auction_result.get('ggpPenalty', 0) if auction_result else 0
+                            
+                            # Время начала
+                            timer_started = auction_result.get('timerStartedAt', '') if auction_result else ''
+                            
+                            required_action = item.get('requiredAction') or {}
+                            action_kind = required_action.get('kind', '') if required_action else ''
+                            
+                            participants[name] = {
+                                'points': points,
+                                'selected': False,
+                                'game_title': game_title,
+                                'game_type': game_type,
+                                'game_reward': game_reward,
+                                'game_penalty': game_penalty,
+                                'action_kind': action_kind,
+                                'timer_started': timer_started,
+                                'timestamp': time.time()
+                            }
+                            
+                            logger.debug(f"  [{idx}] {name}: очки={points}, игра='{game_title}'")
                         
                     except Exception as e:
                         logger.warning(f"⚠️ [{idx}] Ошибка парсинга: {e}")
-                        # Логируем сырые данные для отладки
                         try:
                             logger.warning(f"   Сырые данные: {json.dumps(item, ensure_ascii=False)[:300] if item else 'None'}")
                         except:
                             pass
                         continue
                 
-                # Определяем активного стримера
+                # Определяем активного стримера (у кого самый свежий timerStartedAt)
                 if participants:
                     active_name = None
                     latest_time = ""
@@ -200,7 +225,7 @@ class NassalMonitor:
                 # Проверяем что все 12 стримеров на месте
                 missing = [name for name in STREAMERS.values() if name not in participants]
                 if missing:
-                    logger.warning(f"⚠️ Отсутствуют стримеры: {missing}")
+                    logger.warning(f"️ Отсутствуют стримеры: {missing}")
                 else:
                     logger.info(f"✅ Все 12 стримеров на месте!")
                 
@@ -222,6 +247,7 @@ class NassalMonitor:
         return 0
     
     async def get_detailed_streamer_info(self, streamer_name: str) -> Optional[str]:
+        """Получает подробную информацию о стримере с отображением игры для всех"""
         try:
             if streamer_name not in STREAMERS.values():
                 return None
@@ -240,7 +266,8 @@ class NassalMonitor:
             message += f"🏆 <b>Место в топе:</b> {real_position} из {len(data)}\n"
             message += f"⭐ <b>Очки:</b> {info['points']}\n"
             
-            if info.get('selected') and info.get('game_title'):
+            # Показываем игру для ВСЕХ у кого есть game_title (независимо от selected)
+            if info.get('game_title'):
                 game_title = info['game_title']
                 game_type = info.get('game_type', '')
                 game_reward = info.get('game_reward', 0)
@@ -255,13 +282,17 @@ class NassalMonitor:
                     message += f"\n💰 Награда: +{game_reward}"
                 if game_penalty:
                     message += f"\n💔 Штраф: -{game_penalty}"
+                
+                # Для активного стримера показываем дополнительный статус
+                if info.get('selected'):
+                    message += f"\n🔥 <b>Статус:</b> Активен (главный)"
             else:
-                message += f"\n <b>Статус:</b> Не активен"
+                message += f"\n⚪ <b>Статус:</b> Не активен"
             
             return message
             
         except Exception as e:
-            logger.error(f"❌ Ошибка: {e}", exc_info=True)
+            logger.error(f" Ошибка: {e}", exc_info=True)
             return None
     
     async def send_notification(self, message: str):
@@ -291,9 +322,8 @@ class NassalMonitor:
     async def start(self):
         @self.dp.message(Command("debug"))
         async def cmd_debug(message: types.Message):
-            """Показывает сырые данные из API"""
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только для администраторов")
+                await message.answer(" Только для администраторов")
                 return
             
             await message.answer("🔍 Получаю сырые данные из API...")
@@ -305,7 +335,7 @@ class NassalMonitor:
                 async with self.session.get(API_URL) as response:
                     data = await response.json()
                     
-                    text = f"📊 <b>Сырые данные API:</b>\n\n"
+                    text = f" <b>Сырые данные API:</b>\n\n"
                     text += f"Всего: {data.get('data', {}).get('count', 0)}\n"
                     text += f"Массив: {len(data.get('data', {}).get('array', []))}\n\n"
                     
@@ -316,15 +346,19 @@ class NassalMonitor:
                         
                         player = item.get('player')
                         if player is None:
-                            name = "???"
-                            points = "?"
                             auction = item.get('currentAuctionResult') or {}
-                            game = auction.get('title', '')
                             player_id = auction.get('playerId', '')
+                            game = auction.get('title', '')
                             
-                            text += f"<b>{idx+1}. {name} (player=null!)</b>\n"
+                            text += f"<b>{idx+1}. ??? (player=null!)</b>\n"
                             text += f"   playerId: {player_id}\n"
-                            text += f"   Игра: {game or 'нет'}\n\n"
+                            text += f"   Игра: {game or 'нет'}\n"
+                            
+                            # Показываем из кэша если есть
+                            if player_id and player_id in self.player_cache:
+                                cached_name = self.player_cache[player_id]['name']
+                                text += f"   Кэш: {cached_name}\n"
+                            text += "\n"
                         else:
                             name = player.get('name', '???')
                             points = player.get('ggp', 0)
@@ -371,7 +405,7 @@ class NassalMonitor:
             self.monitoring_groups.append(group_info)
             self.save_groups()
             
-            thread_info = f"\n📌 Ветка ID: {thread_id}" if thread_id else ""
+            thread_info = f"\n Ветка ID: {thread_id}" if thread_id else ""
             await message.answer(
                 f"✅ <b>Группа добавлена!</b>\n\n"
                 f"👥 {message.chat.title}\n"
@@ -449,7 +483,7 @@ class NassalMonitor:
             
             if thread_id:
                 text += f"📌 Ветка ID: <code>{thread_id}</code>\n"
-                text += f"\n <code>/monitor {chat_id} {thread_id}</code>"
+                text += f"\n💡 <code>/monitor {chat_id} {thread_id}</code>"
             else:
                 text += f"\n💡 <code>/monitor {chat_id}</code>"
             
@@ -460,9 +494,9 @@ class NassalMonitor:
             admin_text = ""
             if self.is_admin(message.from_user.id):
                 admin_text = (
-                    "\n🔐 <b>Админ:</b>\n"
+                    "\n <b>Админ:</b>\n"
                     "/add_group ➕ добавить группу\n"
-                    "/remove_group  удалить\n"
+                    "/remove_group ➖ удалить\n"
                     "/list_groups 📋 список\n"
                     "/test_notify 🧪 тест\n"
                     "/my_id 🆔 ID чата\n"
@@ -472,13 +506,13 @@ class NassalMonitor:
             status_text = f"\n📡 <b>Мониторинг:</b> {'🟢' if self.monitoring_active else '🔴'}"
             
             await message.answer(
-                " <b>Бот Nassal.pro</b>\n\n"
+                "🤖 <b>Бот Nassal.pro</b>\n\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
                 "📋 <b>Команды:</b>\n\n"
                 "/rating 🏆 рейтинг\n"
-                "/points  таблица\n"
+                "/points 📊 таблица\n"
                 "/streamer [номер/имя] 👤 инфо\n"
-                "/list 📝 список\n"
+                "/list  список\n"
                 "/monitor 🔔 мониторинг"
                 + status_text
                 + admin_text,
@@ -511,7 +545,7 @@ class NassalMonitor:
             for i, (name, info) in enumerate(leaderboard, 1):
                 points = info['points']
                 medal = medals.get(i, f"{i}.")
-                marker = "🔥" if info.get('selected') else ""
+                marker = "" if info.get('selected') else ""
                 
                 if points > 0:
                     points_str = f"+{points}"
@@ -529,7 +563,7 @@ class NassalMonitor:
                     text += f"{i}. {marker}{name} — {points_emoji} <b>{points_str}</b>\n"
             
             text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
-            text += f" Всего: {len(data)}"
+            text += f"👥 Всего: {len(data)}"
             
             await message.answer(text, parse_mode="HTML")
         
@@ -552,13 +586,13 @@ class NassalMonitor:
                 selected = info.get('selected', False)
                 
                 if points > 0:
-                    emoji = "🟢"
+                    emoji = ""
                     points_str = f"+{points}"
                 elif points < 0:
                     emoji = "🔴"
                     points_str = str(points)
                 else:
-                    emoji = "⚪"
+                    emoji = ""
                     points_str = "0"
                 
                 marker = "🔥" if selected else ""
@@ -696,7 +730,7 @@ class NassalMonitor:
                         await message.answer(f"❌ Не удалось получить информацию\n\n💡 /debug")
                     return
         
-        logger.info(" Бот запущен!")
+        logger.info("🚀 Бот запущен!")
         logger.info(f"👥 Админы: {ADMINS}")
         logger.info(f"📋 Групп: {len(self.monitoring_groups)}")
         
@@ -742,7 +776,7 @@ class NassalMonitor:
                     changes = self.compare_data(self.previous_data, current_data)
                     
                     if changes:
-                        logger.info(f" Найдено изменений: {len(changes)}")
+                        logger.info(f"📢 Найдено изменений: {len(changes)}")
                         notification = self._format_notification(changes)
                         await self.send_notification(notification)
                         logger.info(f"📤 Отправлено")
@@ -759,7 +793,7 @@ class NassalMonitor:
         logger.info("⏹️ Мониторинг остановлен")
     
     def _format_notification(self, changes: list) -> str:
-        notification = " <b>ИЗМЕНЕНИЯ НА NASSAL.PRO</b>\n"
+        notification = "🔔 <b>ИЗМЕНЕНИЯ НА NASSAL.PRO</b>\n"
         notification += "━━━━━━━━━━━━━━━━━━━━\n\n"
         notification += "\n".join(changes)
         notification += "\n\n━━━━━━━━━━━━━━━━━━━━"
@@ -794,7 +828,7 @@ class NassalMonitor:
                         direction = "поднялся"
                         emoji = "🚀"
                     else:
-                        arrow = "⬇️"
+                        arrow = "️"
                         direction = "упал"
                         emoji = "📉"
                         diff = abs(diff)
@@ -848,7 +882,7 @@ class NassalMonitor:
                     )
         
         if game_changes:
-            changes.append(" <b>СМЕНА ИГР:</b>\n\n" + "\n\n".join(game_changes))
+            changes.append("🎮 <b>СМЕНА ИГР:</b>\n\n" + "\n\n".join(game_changes))
         
         return changes
     
@@ -865,7 +899,7 @@ async def main():
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     
     if not BOT_TOKEN:
-        logger.error(" BOT_TOKEN не найден!")
+        logger.error("❌ BOT_TOKEN не найден!")
         return
     
     logger.info(f"✅ Запуск бота")
