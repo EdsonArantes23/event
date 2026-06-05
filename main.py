@@ -566,8 +566,11 @@ class NassalMonitor:
 
 
 async def main():
+    # ⚠️ ВСТАВЬ СЮДА СВОЙ ТОКЕН ОТ @BotFather
     BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-    CHAT_ID = 123456789
+    
+    # Chat ID куда отправлять уведомления
+    CHAT_ID = -1003268832776
     
     monitor = NassalMonitor(BOT_TOKEN, CHAT_ID)
     await monitor.start()
