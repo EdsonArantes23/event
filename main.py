@@ -2,7 +2,7 @@ import asyncio
 import time
 import os
 import aiohttp
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -29,7 +29,8 @@ STREAMERS = {
 
 STREAMERS_BY_NAME = {name.lower(): num for num, name in STREAMERS.items()}
 
-API_URL = "https://api-game.nassal.pro/list"
+# ПРАВИЛЬНЫЙ URL API
+API_URL = "https://api-game.nassal.pro/api/public/player/list"
 
 class NassalMonitor:
     def __init__(self, bot_token: str, chat_id: int):
@@ -66,15 +67,18 @@ class NassalMonitor:
                     return {}
                 
                 data = await response.json()
-                logger.info(f"✅ Получено данных: {data.get('count', 0)} участников")
+                logger.info(f"✅ Получено данных: {data.get('data', {}).get('count', 0)} участников")
                 
                 participants = {}
                 
                 # Парсим массив участников
-                for idx, item in enumerate(data.get('array', [])):
+                for idx, item in enumerate(data.get('data', {}).get('array', [])):
                     try:
                         player = item.get('player', {})
                         name = player.get('name', f'Unknown_{idx}')
+                        
+                        # Получаем статус игрока
+                        status = player.get('status', '')
                         
                         # Получаем текущее действие
                         required_action = item.get('requiredAction', {})
@@ -84,10 +88,14 @@ class NassalMonitor:
                         # Получаем информацию об аукционе
                         auction_result = item.get('currentAuctionResult', {})
                         
+                        # Определяем, активен ли игрок
+                        is_active = action_kind == 'content-in-progress' or status == 'content'
+                        
                         participants[name] = {
                             'position': idx + 1,
-                            'points': '0',  # Пока нет очков в API, можно добавить позже
-                            'selected': action_kind == 'content-in-progress',
+                            'points': '0',  # Очки пока не видны в API
+                            'selected': is_active,
+                            'status': status,
                             'action_kind': action_kind,
                             'content_type': content_type,
                             'auction_result': auction_result,
@@ -121,21 +129,19 @@ class NassalMonitor:
             message = f"👤 <b>{streamer_name}</b>\n"
             message += f"📊 Позиция: {info['position']}\n"
             message += f"⭐ Очки: {info.get('points', '0')}\n"
+            message += f"📌 Статус: {info.get('status', 'неизвестно')}\n"
             
             if info.get('selected'):
                 action_kind = info.get('action_kind', '')
                 content_type = info.get('content_type', '')
-                auction_result = info.get('auction_result', {})
                 
                 if action_kind == 'content-in-progress':
                     if content_type == 'game':
-                        # Здесь можно получить название игры из auction_result
-                        content_item_id = auction_result.get('contentItemId', '')
-                        message += f"\n🎮 <b>Игра:</b> Загружается..."
+                        message += f"\n🎮 <b>Сейчас играет</b>"
                     else:
-                        message += f"\n⚡ <b>Действие:</b> {action_kind}"
+                        message += f"\n⚡ <b>Действие:</b> {content_type}"
                 else:
-                    message += f"\n⚡ <b>Статус:</b> {action_kind}"
+                    message += f"\n⚡ <b>Статус:</b> {action_kind or 'активен'}"
             else:
                 message += f"\n⚡ <b>Статус:</b> Не активен"
             
@@ -280,11 +286,11 @@ class NassalMonitor:
             
             if active_streamer:
                 active_points = data[active_streamer].get('points', '0')
-                action_kind = data[active_streamer].get('action_kind', 'Неизвестно')
+                status = data[active_streamer].get('status', 'неизвестно')
                 
                 text += f"🎯 <b>Активен:</b> {active_streamer}\n"
                 text += f"⭐ <b>Очки:</b> {active_points}\n"
-                text += f"⚡ <b>Действие:</b> {action_kind}\n"
+                text += f"📌 <b>Статус:</b> {status}\n"
             else:
                 text += "⚡ <b>Никто не активен</b>"
             
@@ -294,7 +300,7 @@ class NassalMonitor:
         
         @self.dp.message(Command("monitor"))
         async def cmd_monitor(message: types.Message):
-            await message.answer("🔔 Мониторинг изменений активирован!\n\nБот будет присылать:\n• Изменения в очках\n• Смену активного стримера\n• Изменение действий\n• Смену позиций")
+            await message.answer("🔔 Мониторинг изменений активирован!\n\nБот будет присылать:\n• Смену активного стримера\n• Изменение статусов\n• Изменения в очках")
             asyncio.create_task(self.monitor_loop())
         
         @self.dp.message(Command("stop"))
@@ -383,20 +389,20 @@ class NassalMonitor:
         if old_active != new_active:
             if new_active:
                 changes.append(f"🔥 <b>{new_active}</b> стал активным!")
-            else:
-                changes.append("⚡ <b>Активность сброшена</b>")
+            elif old_active:
+                changes.append(f"⚡ <b>{old_active}</b> завершил действие")
         
-        # Проверяем изменения действий
+        # Проверяем изменения статусов
         for name, data in new_data.items():
             if name in old_data:
-                old_action = old_data[name].get('action_kind', '')
-                new_action = data.get('action_kind', '')
+                old_status = old_data[name].get('status', '')
+                new_status = data.get('status', '')
                 
-                if old_action != new_action and data.get('selected'):
+                if old_status != new_status:
                     changes.append(
-                        f"🎯 <b>Новое действие: {name}</b>\n"
-                        f"❌ Было: {old_action}\n"
-                        f"✅ Стало: {new_action}"
+                        f"📌 <b>{name}</b>\n"
+                        f"❌ Было: {old_status}\n"
+                        f"✅ Стало: {new_status}"
                     )
         
         # Проверяем изменения очков
