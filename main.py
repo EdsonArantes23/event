@@ -29,7 +29,6 @@ STREAMERS = {
 
 STREAMERS_BY_NAME = {name.lower(): num for num, name in STREAMERS.items()}
 
-# ПРАВИЛЬНЫЙ URL API
 API_URL = "https://api-game.nassal.pro/api/public/player/list"
 
 class NassalMonitor:
@@ -41,7 +40,6 @@ class NassalMonitor:
         self.session: Optional[aiohttp.ClientSession] = None
     
     def get_streamer_keyboard(self) -> ReplyKeyboardMarkup:
-        """Создает клавиатуру со списком стримеров"""
         keyboard = []
         row = []
         for num, name in STREAMERS.items():
@@ -67,45 +65,61 @@ class NassalMonitor:
                     return {}
                 
                 data = await response.json()
-                logger.info(f"✅ Получено данных: {data.get('data', {}).get('count', 0)} участников")
-                
                 participants = {}
                 
-                # Парсим массив участников
-                for idx, item in enumerate(data.get('data', {}).get('array', [])):
+                for item in data.get('data', {}).get('array', []):
                     try:
                         player = item.get('player', {})
-                        name = player.get('name', f'Unknown_{idx}')
+                        name = player.get('name', '')
                         
-                        # Получаем статус игрока
-                        status = player.get('status', '')
+                        if not name or name not in STREAMERS.values():
+                            continue
                         
-                        # Получаем текущее действие
+                        # Очки из player.ggp
+                        points = player.get('ggp', 0)
+                        
+                        # Позиция из нашего словаря
+                        position = STREAMERS_BY_NAME.get(name.lower(), 0)
+                        
+                        # Информация об игре/действии
+                        auction_result = item.get('currentAuctionResult', {})
+                        game_title = auction_result.get('title', '')
+                        game_type = auction_result.get('type', '')
+                        game_reward = auction_result.get('ggpReward', 0)
+                        game_penalty = auction_result.get('ggpPenalty', 0)
+                        game_image = auction_result.get('imageUrl', '')
+                        
+                        # Статус действия
                         required_action = item.get('requiredAction', {})
                         action_kind = required_action.get('kind', '')
                         content_type = required_action.get('contentType', '')
                         
-                        # Получаем информацию об аукционе
-                        auction_result = item.get('currentAuctionResult', {})
+                        # Активен ли игрок
+                        is_active = action_kind == 'content-in-progress'
                         
-                        # Определяем, активен ли игрок
-                        is_active = action_kind == 'content-in-progress' or status == 'content'
+                        # Время начала (для определения "главного" активного)
+                        timer_started = auction_result.get('timerStartedAt', '')
                         
                         participants[name] = {
-                            'position': idx + 1,
-                            'points': '0',  # Очки пока не видны в API
+                            'position': position,
+                            'points': points,
                             'selected': is_active,
-                            'status': status,
+                            'game_title': game_title,
+                            'game_type': game_type,
+                            'game_reward': game_reward,
+                            'game_penalty': game_penalty,
+                            'game_image': game_image,
                             'action_kind': action_kind,
                             'content_type': content_type,
-                            'auction_result': auction_result,
+                            'timer_started': timer_started,
                             'timestamp': time.time()
                         }
                         
                     except Exception as e:
-                        logger.warning(f"⚠️ Ошибка парсинга участника {idx}: {e}")
+                        logger.warning(f"⚠️ Ошибка парсинга: {e}")
                         continue
                 
+                logger.info(f"✅ Получено {len(participants)} участников")
                 return participants
                 
         except Exception as e:
@@ -125,55 +139,52 @@ class NassalMonitor:
             
             info = data[streamer_name]
             
-            # Формируем сообщение
             message = f"👤 <b>{streamer_name}</b>\n"
             message += f"📊 Позиция: {info['position']}\n"
-            message += f"⭐ Очки: {info.get('points', '0')}\n"
-            message += f"📌 Статус: {info.get('status', 'неизвестно')}\n"
+            message += f"⭐ <b>Очки: {info['points']}</b>\n"
             
-            if info.get('selected'):
-                action_kind = info.get('action_kind', '')
-                content_type = info.get('content_type', '')
+            if info.get('selected') and info.get('game_title'):
+                game_title = info['game_title']
+                game_type = info.get('game_type', '')
+                game_reward = info.get('game_reward', 0)
+                game_penalty = info.get('game_penalty', 0)
                 
-                if action_kind == 'content-in-progress':
-                    if content_type == 'game':
-                        message += f"\n🎮 <b>Сейчас играет</b>"
-                    else:
-                        message += f"\n⚡ <b>Действие:</b> {content_type}"
+                if game_type == 'game':
+                    message += f"\n🎮 <b>Игра:</b> {game_title}"
                 else:
-                    message += f"\n⚡ <b>Статус:</b> {action_kind or 'активен'}"
+                    message += f"\n⚡ <b>Действие:</b> {game_title}"
+                
+                if game_reward:
+                    message += f"\n💰 Награда: +{game_reward}"
+                if game_penalty:
+                    message += f"\n💔 Штраф: -{game_penalty}"
             else:
                 message += f"\n⚡ <b>Статус:</b> Не активен"
             
             return message
             
         except Exception as e:
-            logger.error(f"❌ Ошибка при получении информации о {streamer_name}: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             return None
     
     async def send_notification(self, message: str):
         try:
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode="HTML"
-            )
+            await self.bot.send_message(chat_id=self.chat_id, text=message, parse_mode="HTML")
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки сообщения: {e}")
+            logger.error(f"❌ Ошибка отправки: {e}")
     
     async def start(self):
         @self.dp.message(Command("start"))
         async def cmd_start(message: types.Message):
             await message.answer(
-                "🤖 <b>Бот мониторинга Nassal.pro запущен!</b>\n\n"
-                "📋 <b>Доступные команды:</b>\n"
-                "/status - текущий активный стример\n"
-                "/streamer [номер/имя] - информация о стримере\n"
-                "/points - очки всех участников\n"
-                "/list - список всех участников\n"
-                "/monitor - начать мониторинг изменений\n"
-                "/stop - остановить бота\n\n"
-                "Или выберите стримера из меню:",
+                "🤖 <b>Бот мониторинга Nassal.pro</b>\n\n"
+                "📋 <b>Команды:</b>\n"
+                "/status - текущий статус\n"
+                "/streamer [номер/имя] - инфо о стримере\n"
+                "/points - таблица очков\n"
+                "/list - список участников\n"
+                "/monitor - мониторинг изменений\n"
+                "/stop - остановить бота",
                 reply_markup=self.get_streamer_keyboard()
             )
         
@@ -186,50 +197,40 @@ class NassalMonitor:
         
         @self.dp.message(Command("points"))
         async def cmd_points(message: types.Message):
-            await message.answer("🔄 Получаю текущие очки...")
-            
+            await message.answer("🔄 Получаю очки...")
             data = await self.get_participants_data()
             
             if not data:
                 await message.answer("❌ Не удалось получить данные")
                 return
             
-            text = "📊 <b>Текущие очки участников:</b>\n\n"
+            text = "📊 <b>Таблица очков:</b>\n\n"
             
-            sorted_participants = sorted(
-                [(name, info) for name, info in data.items()],
-                key=lambda x: x[1]['position']
-            )
+            # Сортируем по позиции (из нашего словаря)
+            sorted_participants = sorted(data.items(), key=lambda x: x[1]['position'])
             
             for name, info in sorted_participants:
-                points = info.get('points', '0')
-                position = info.get('position', 0)
+                points = info['points']
+                position = info['position']
                 selected = info.get('selected', False)
                 
-                points_int = int(points) if points.lstrip('-').isdigit() else 0
-                if points_int > 0:
-                    points_emoji = "🟢"
-                elif points_int < 0:
-                    points_emoji = "🔴"
+                if points > 0:
+                    emoji = "🟢"
+                elif points < 0:
+                    emoji = "🔴"
                 else:
-                    points_emoji = "⚪"
+                    emoji = "⚪"
                 
-                active_marker = "🔥" if selected else ""
-                text += f"{position}. {active_marker} {name} - {points_emoji} <b>{points}</b>\n"
+                marker = "🔥" if selected else ""
+                text += f"{position}. {marker} {name} - {emoji} <b>{points}</b>\n"
             
             text += f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
-            
             await message.answer(text, parse_mode="HTML")
         
         @self.dp.message(Command("streamer"))
         async def cmd_streamer(message: types.Message):
             if len(message.text.split()) < 2:
-                await message.answer(
-                    "❌ <b>Укажите номер или имя стримера</b>\n\n"
-                    "Примеры:\n"
-                    "/streamer 1\n"
-                    "/streamer Flashko"
-                )
+                await message.answer("❌ Укажите номер или имя\nПример: /streamer 1")
                 return
             
             query = message.text.split(maxsplit=1)[1].strip()
@@ -237,70 +238,71 @@ class NassalMonitor:
             
             if query.isdigit():
                 num = int(query)
-                if num in STREAMERS:
-                    streamer_name = STREAMERS[num]
-                else:
-                    await message.answer(f"❌ Стример с номером {num} не найден")
-                    return
+                streamer_name = STREAMERS.get(num)
             else:
                 query_lower = query.lower()
                 if query_lower in STREAMERS_BY_NAME:
                     streamer_name = STREAMERS[STREAMERS_BY_NAME[query_lower]]
                 else:
-                    found = False
                     for name in STREAMERS.values():
                         if query_lower in name.lower():
                             streamer_name = name
-                            found = True
                             break
-                    if not found:
-                        await message.answer(f"❌ Стример '{query}' не найден")
-                        return
             
-            await message.answer(f"⏳ Загрузка информации о {streamer_name}...")
+            if not streamer_name:
+                await message.answer(f"❌ Стример '{query}' не найден")
+                return
             
+            await message.answer(f"⏳ Загрузка...")
             info = await self.get_detailed_streamer_info(streamer_name)
             
             if info:
                 await message.answer(info, parse_mode="HTML")
             else:
-                await message.answer(f"❌ Не удалось получить информацию о {streamer_name}")
+                await message.answer(f"❌ Не удалось получить информацию")
         
         @self.dp.message(Command("status"))
         async def cmd_status(message: types.Message):
-            await message.answer("🔄 Получаю текущий статус...")
-            
+            await message.answer("🔄 Получаю статус...")
             data = await self.get_participants_data()
             
             if not data:
                 await message.answer("❌ Не удалось получить данные")
                 return
             
+            # Находим активного (у кого самый свежий timerStartedAt)
             active_streamer = None
-            for name, info in data.items():
-                if info.get('selected'):
-                    active_streamer = name
-                    break
+            latest_time = ""
             
-            text = f"📊 <b>Текущий статус</b>\n\n"
+            for name, info in data.items():
+                if info.get('selected') and info.get('timer_started'):
+                    if info['timer_started'] > latest_time:
+                        latest_time = info['timer_started']
+                        active_streamer = name
+            
+            text = "📊 <b>Текущий статус</b>\n\n"
             
             if active_streamer:
-                active_points = data[active_streamer].get('points', '0')
-                status = data[active_streamer].get('status', 'неизвестно')
+                info = data[active_streamer]
+                game_title = info.get('game_title', 'Неизвестно')
+                game_type = info.get('game_type', '')
                 
                 text += f"🎯 <b>Активен:</b> {active_streamer}\n"
-                text += f"⭐ <b>Очки:</b> {active_points}\n"
-                text += f"📌 <b>Статус:</b> {status}\n"
+                text += f"⭐ <b>Очки:</b> {info['points']}\n"
+                
+                if game_type == 'game':
+                    text += f"🎮 <b>Игра:</b> {game_title}\n"
+                else:
+                    text += f"⚡ <b>Действие:</b> {game_title}\n"
             else:
                 text += "⚡ <b>Никто не активен</b>"
             
             text += f"\n\n⏰ {datetime.now().strftime('%H:%M:%S')}"
-            
             await message.answer(text, parse_mode="HTML")
         
         @self.dp.message(Command("monitor"))
         async def cmd_monitor(message: types.Message):
-            await message.answer("🔔 Мониторинг изменений активирован!\n\nБот будет присылать:\n• Смену активного стримера\n• Изменение статусов\n• Изменения в очках")
+            await message.answer("🔔 Мониторинг активирован!")
             asyncio.create_task(self.monitor_loop())
         
         @self.dp.message(Command("stop"))
@@ -313,17 +315,14 @@ class NassalMonitor:
         @self.dp.message()
         async def handle_keyboard(message: types.Message):
             text = message.text.strip()
-            
             for num, name in STREAMERS.items():
                 if text == f"{num}. {name}" or text == name:
-                    await message.answer(f"⏳ Загрузка информации о {name}...")
-                    
+                    await message.answer(f"⏳ Загрузка...")
                     info = await self.get_detailed_streamer_info(name)
-                    
                     if info:
                         await message.answer(info, parse_mode="HTML")
                     else:
-                        await message.answer(f"❌ Не удалось получить информацию о {name}")
+                        await message.answer(f"❌ Не удалось получить информацию")
                     return
         
         logger.info("🚀 Бот запущен!")
@@ -332,103 +331,68 @@ class NassalMonitor:
     async def monitor_loop(self):
         logger.info("Запуск мониторинга...")
         
-        # Инициализация
-        logger.info("🔄 Инициализация: получаем текущее состояние...")
         initial_data = await self.get_participants_data()
-        
         if initial_data:
             self.previous_data = initial_data
-            logger.info(f"✅ Начальное состояние запомнено ({len(initial_data)} участников)")
-            logger.info("🔍 Теперь буду следить за изменениями...")
+            logger.info(f"✅ Начальное состояние запомнено")
         else:
             logger.error("❌ Не удалось получить начальное состояние")
             return
         
-        # Основной цикл
         while True:
             try:
                 current_data = await self.get_participants_data()
                 
-                if current_data:
-                    if self.previous_data:
-                        changes = self.compare_data(self.previous_data, current_data)
-                        
-                        if changes:
-                            notification = "🔔 <b>Изменения на Nassal.pro</b>\n\n"
-                            notification += "\n━━━━━━━━━━━━\n".join(changes)
-                            notification += f"\n\n⏰ {time.strftime('%H:%M:%S')}"
-                            
-                            await self.send_notification(notification)
-                            logger.info(f"📤 Отправлено уведомлений: {len(changes)}")
+                if current_data and self.previous_data:
+                    changes = self.compare_data(self.previous_data, current_data)
                     
-                    self.previous_data = current_data
-                    
+                    if changes:
+                        notification = "🔔 <b>Изменения на Nassal.pro</b>\n\n"
+                        notification += "\n━━━━━━━━━━━━\n".join(changes)
+                        notification += f"\n\n⏰ {time.strftime('%H:%M:%S')}"
+                        await self.send_notification(notification)
+                
+                self.previous_data = current_data
+                
             except Exception as e:
-                logger.error(f"❌ Ошибка в цикле мониторинга: {e}")
+                logger.error(f"❌ Ошибка: {e}")
             
             await asyncio.sleep(10)
     
     def compare_data(self, old_data: Dict, new_data: Dict) -> list:
-        """Сравнивает данные и находит изменения"""
         changes = []
         
-        # Проверяем смену активного стримера
-        old_active = None
-        new_active = None
-        
-        for name, info in old_data.items():
-            if info.get('selected'):
-                old_active = name
-                break
-        
-        for name, info in new_data.items():
-            if info.get('selected'):
-                new_active = name
-                break
-        
-        if old_active != new_active:
-            if new_active:
-                changes.append(f"🔥 <b>{new_active}</b> стал активным!")
-            elif old_active:
-                changes.append(f"⚡ <b>{old_active}</b> завершил действие")
-        
-        # Проверяем изменения статусов
-        for name, data in new_data.items():
-            if name in old_data:
-                old_status = old_data[name].get('status', '')
-                new_status = data.get('status', '')
-                
-                if old_status != new_status:
-                    changes.append(
-                        f"📌 <b>{name}</b>\n"
-                        f"❌ Было: {old_status}\n"
-                        f"✅ Стало: {new_status}"
-                    )
-        
-        # Проверяем изменения очков
+        # Изменения очков
         points_changes = []
         for name, data in new_data.items():
             if name in old_data:
-                old_points = old_data[name].get('points', '0')
-                new_points = data.get('points', '0')
+                old_points = old_data[name].get('points', 0)
+                new_points = data.get('points', 0)
                 
                 if old_points != new_points:
-                    try:
-                        diff = int(new_points) - int(old_points)
-                        arrow = "⬆️" if diff > 0 else "⬇️"
-                        sign = "+" if diff > 0 else ""
-                        points_changes.append(
-                            f"{arrow} <b>{name}</b>\n"
-                            f"Очки: {old_points} → {new_points} ({sign}{diff})"
-                        )
-                    except:
-                        points_changes.append(
-                            f"⭐ <b>{name}</b>\n"
-                            f"Очки: {old_points} → {new_points}"
-                        )
+                    diff = new_points - old_points
+                    arrow = "⬆️" if diff > 0 else "⬇️"
+                    sign = "+" if diff > 0 else ""
+                    points_changes.append(
+                        f"{arrow} <b>{name}</b>\n"
+                        f"Очки: {old_points} → {new_points} ({sign}{diff})"
+                    )
         
         if points_changes:
             changes.append("💰 <b>Изменения в очках:</b>\n" + "\n".join(points_changes))
+        
+        # Изменения игр
+        for name, data in new_data.items():
+            if name in old_data:
+                old_game = old_data[name].get('game_title', '')
+                new_game = data.get('game_title', '')
+                
+                if old_game != new_game and new_game:
+                    changes.append(
+                        f"🎮 <b>{name}</b>\n"
+                        f"❌ Было: {old_game or 'Нет'}\n"
+                        f"✅ Стало: {new_game}"
+                    )
         
         return changes
 
@@ -438,17 +402,16 @@ async def main():
     CHAT_ID = os.getenv("CHAT_ID", "-1003268832776")
     
     if not BOT_TOKEN:
-        logger.error("❌ Переменная окружения BOT_TOKEN не найдена!")
+        logger.error("❌ BOT_TOKEN не найден!")
         return
     
     try:
         CHAT_ID = int(CHAT_ID)
     except ValueError:
-        logger.error(f"❌ CHAT_ID имеет неверный формат: {CHAT_ID}")
+        logger.error(f"❌ Неверный CHAT_ID: {CHAT_ID}")
         return
     
-    logger.info(f"✅ Бот запускается с chat_id: {CHAT_ID}")
-    
+    logger.info(f"✅ Запуск с chat_id: {CHAT_ID}")
     monitor = NassalMonitor(BOT_TOKEN, CHAT_ID)
     await monitor.start()
 
