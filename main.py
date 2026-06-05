@@ -1,5 +1,6 @@
 import asyncio
 import time
+import os
 from typing import Dict, Optional
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -323,11 +324,11 @@ class NassalMonitor:
                 # Форматируем очки с цветом
                 points_int = int(points) if points.lstrip('-').isdigit() else 0
                 if points_int > 0:
-                    points_emoji = "🟢"
+                    points_emoji = ""
                 elif points_int < 0:
                     points_emoji = "🔴"
                 else:
-                    points_emoji = "⚪"
+                    points_emoji = ""
                 
                 active_marker = "🔥" if selected else ""
                 text += f"{position}. {active_marker} {name} - {points_emoji} <b>{points}</b>\n"
@@ -383,7 +384,7 @@ class NassalMonitor:
         
         @self.dp.message(Command("status"))
         async def cmd_status(message: types.Message):
-            await message.answer("🔄 Получаю текущий статус...")
+            await message.answer(" Получаю текущий статус...")
             
             data = await self.get_participants_data()
             
@@ -489,7 +490,7 @@ class NassalMonitor:
                         break
                 
                 changes.append(
-                    f"🎯 <b>Новое действие</b>\n"
+                    f" <b>Новое действие</b>\n"
                     f"👤 Участник: {active_streamer or 'Неизвестно'}\n"
                     f"❌ Было: {old_action}\n"
                     f"✅ Стало: {new_action}"
@@ -516,10 +517,10 @@ class NassalMonitor:
                         diff = new_points_int - old_points_int
                         
                         if diff > 0:
-                            arrow = "⬆️"
+                            arrow = "️"
                             sign = "+"
                         elif diff < 0:
-                            arrow = "⬇️"
+                            arrow = "️"
                             sign = ""
                         else:
                             arrow = ""
@@ -566,11 +567,24 @@ class NassalMonitor:
 
 
 async def main():
-    # ⚠️ ВСТАВЬ СЮДА СВОЙ ТОКЕН ОТ @BotFather
-    BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+    # Получаем токен и chat_id из переменных окружения хоста
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    CHAT_ID = os.getenv("CHAT_ID", "-1003268832776")
     
-    # Chat ID куда отправлять уведомления
-    CHAT_ID = -1003268832776
+    # Проверяем наличие токена
+    if not BOT_TOKEN:
+        logger.error(" Переменная окружения BOT_TOKEN не найдена!")
+        logger.error("Убедитесь, что переменная BOT_TOKEN задана в настройках хоста")
+        return
+    
+    # Преобразуем CHAT_ID в число
+    try:
+        CHAT_ID = int(CHAT_ID)
+    except ValueError:
+        logger.error(f"❌ CHAT_ID имеет неверный формат: {CHAT_ID}")
+        return
+    
+    logger.info(f"✅ Бот запускается с chat_id: {CHAT_ID}")
     
     monitor = NassalMonitor(BOT_TOKEN, CHAT_ID)
     await monitor.start()
