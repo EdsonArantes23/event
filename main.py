@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 STREAMERS = {
@@ -42,12 +42,15 @@ class NassalMonitor:
         self.previous_data: Dict = {}
         self.session: Optional[aiohttp.ClientSession] = None
         self.monitoring_groups: List[Dict] = self.load_groups()
+        self.monitoring_active: bool = False  # Флаг активности мониторинга
     
     def load_groups(self) -> List[Dict]:
         try:
             if os.path.exists(GROUPS_FILE):
                 with open(GROUPS_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    groups = json.load(f)
+                logger.info(f"📂 Загружено групп из файла: {len(groups)}")
+                return groups
         except Exception as e:
             logger.error(f"Ошибка загрузки групп: {e}")
         return []
@@ -157,7 +160,7 @@ class NassalMonitor:
             real_position = self._get_real_position(data, streamer_name)
             
             message = f"👤 <b>{streamer_name}</b>\n"
-            message += f" <b>Место в топе:</b> {real_position} из {len(data)}\n"
+            message += f"🏆 <b>Место в топе:</b> {real_position} из {len(data)}\n"
             message += f"⭐ <b>Очки:</b> {info['points']}\n"
             
             if info.get('selected') and info.get('game_title'):
@@ -167,14 +170,14 @@ class NassalMonitor:
                 game_penalty = info.get('game_penalty', 0)
                 
                 if game_type == 'game':
-                    message += f"\n <b>Игра:</b> {game_title}"
+                    message += f"\n🎮 <b>Игра:</b> {game_title}"
                 else:
                     message += f"\n⚡ <b>Действие:</b> {game_title}"
                 
                 if game_reward:
                     message += f"\n💰 Награда: +{game_reward}"
                 if game_penalty:
-                    message += f"\n💔 Штраф: -{game_penalty}"
+                    message += f"\n Штраф: -{game_penalty}"
             else:
                 message += f"\n⚪ <b>Статус:</b> Не активен"
             
@@ -189,6 +192,7 @@ class NassalMonitor:
             logger.warning("⚠️ Нет групп для отправки уведомлений")
             return
         
+        success_count = 0
         for group in self.monitoring_groups:
             try:
                 chat_id = group['chat_id']
@@ -200,9 +204,12 @@ class NassalMonitor:
                     parse_mode="HTML",
                     message_thread_id=thread_id
                 )
+                success_count += 1
                 logger.info(f"📤 Отправлено в {chat_id}" + (f" (thread: {thread_id})" if thread_id else ""))
             except Exception as e:
-                logger.error(f" Ошибка отправки в {group}: {e}")
+                logger.error(f"❌ Ошибка отправки в {group}: {e}")
+        
+        logger.info(f"✅ Успешно отправлено в {success_count} из {len(self.monitoring_groups)} групп")
     
     async def start(self):
         @self.dp.message(Command("add_group"))
@@ -216,7 +223,7 @@ class NassalMonitor:
             
             for group in self.monitoring_groups:
                 if group['chat_id'] == chat_id and group.get('thread_id') == thread_id:
-                    await message.answer("️ Эта группа/ветка уже добавлена в мониторинг")
+                    await message.answer("⚠️ Эта группа/ветка уже добавлена в мониторинг")
                     return
             
             group_info = {
@@ -232,11 +239,15 @@ class NassalMonitor:
             thread_info = f"\n📌 Ветка ID: {thread_id}" if thread_id else ""
             await message.answer(
                 f"✅ <b>Группа добавлена в мониторинг!</b>\n\n"
-                f" <b>Группа:</b> {message.chat.title}\n"
+                f"👥 <b>Группа:</b> {message.chat.title}\n"
                 f"🆔 <b>Chat ID:</b> {chat_id}"
                 f"{thread_info}\n\n"
                 f"Теперь сюда будут приходить уведомления об изменениях."
             )
+            
+            # Автоматически запускаем мониторинг если ещё не запущен
+            if not self.monitoring_active:
+                asyncio.create_task(self.monitor_loop())
         
         @self.dp.message(Command("remove_group"))
         async def cmd_remove_group(message: types.Message):
@@ -272,6 +283,8 @@ class NassalMonitor:
                 text += f"{i}. <b>{group['chat_title']}</b>{thread_info}\n"
                 text += f"   🆔 ID: {group['chat_id']}\n\n"
             
+            text += f"\n🟢 Мониторинг: {'активен' if self.monitoring_active else 'неактивен'}"
+            
             await message.answer(text, parse_mode="HTML")
         
         @self.dp.message(Command("test_notify"))
@@ -280,16 +293,39 @@ class NassalMonitor:
                 await message.answer("❌ Эта команда только для администраторов")
                 return
             
-            await message.answer("📤 Отправляю тестовое уведомление...")
+            await message.answer(" Отправляю тестовое уведомление...")
             
             test_message = (
-                "🔔 <b>Тестовое уведомление</b>\n\n"
+                " <b>Тестовое уведомление</b>\n\n"
                 "Это тестовое сообщение для проверки работы мониторинга.\n\n"
                 "✅ Если вы видите это сообщение — всё работает!"
             )
             await self.send_notification(test_message)
             
             await message.answer("✅ Тестовое уведомление отправлено")
+        
+        @self.dp.message(Command("my_id"))
+        async def cmd_my_id(message: types.Message):
+            if not self.is_admin(message.from_user.id):
+                await message.answer("❌ Эта команда только для администраторов")
+                return
+            
+            chat_id = message.chat.id
+            thread_id = message.message_thread_id
+            
+            text = f" <b>Информация о текущем чате:</b>\n\n"
+            text += f"👥 <b>Группа:</b> {message.chat.title}\n"
+            text += f"📍 <b>Chat ID:</b> <code>{chat_id}</code>\n"
+            
+            if thread_id:
+                text += f"📌 <b>Ветка ID:</b> <code>{thread_id}</code>\n"
+                text += f"\n💡 Команда для добавления:\n"
+                text += f"<code>/monitor {chat_id} {thread_id}</code>"
+            else:
+                text += f"\n💡 Команда для добавления:\n"
+                text += f"<code>/monitor {chat_id}</code>"
+            
+            await message.answer(text, parse_mode="HTML")
         
         @self.dp.message(Command("start"))
         async def cmd_start(message: types.Message):
@@ -299,19 +335,23 @@ class NassalMonitor:
                     "\n🔐 <b>Админ команды:</b>\n"
                     "/add_group ➕ добавить эту группу в мониторинг\n"
                     "/remove_group ➖ удалить из мониторинга\n"
-                    "/list_groups 📋 список групп\n"
+                    "/list_groups  список групп\n"
                     "/test_notify  тестовое уведомление\n"
+                    "/my_id 🆔 показать ID текущего чата/ветки\n"
                 )
             
+            status_text = f"\n📡 <b>Мониторинг:</b> {' активен' if self.monitoring_active else '🔴 неактивен'}"
+            
             await message.answer(
-                "🤖 <b>Бот мониторинга Nassal.pro</b>\n\n"
+                " <b>Бот мониторинга Nassal.pro</b>\n\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
                 "📋 <b>Доступные команды:</b>\n\n"
-                "/top 🏆 топ лидеров по очкам\n"
+                "/rating 🏆 рейтинг лидеров по очкам\n"
                 "/points 📊 таблица всех участников\n"
                 "/streamer [номер/имя] 👤 инфо о стримере\n"
                 "/list 📝 список участников\n"
                 "/monitor 🔔 включить мониторинг в этой группе"
+                + status_text
                 + admin_text,
                 reply_markup=self.get_streamer_keyboard()
             )
@@ -323,9 +363,9 @@ class NassalMonitor:
                 text += f"{num}. <b>{name}</b>\n"
             await message.answer(text, parse_mode="HTML")
         
-        @self.dp.message(Command("top"))
-        async def cmd_top(message: types.Message):
-            await message.answer("🔄 Получаю топ...")
+        @self.dp.message(Command("rating"))
+        async def cmd_rating(message: types.Message):
+            await message.answer("🔄 Получаю рейтинг...")
             data = await self.get_participants_data()
             
             if not data:
@@ -334,10 +374,10 @@ class NassalMonitor:
             
             leaderboard = self._get_leaderboard(data)
             
-            text = "🏆 <b>ТОП ЛИДЕРОВ ПО ОЧКАМ</b>\n"
+            text = "🏆 <b>РЕЙТИНГ ЛИДЕРОВ ПО ОЧКАМ</b>\n"
             text += "━━━━━━━━━━━━━━━━━━━━\n\n"
             
-            medals = {1: "", 2: "🥈", 3: "🥉"}
+            medals = {1: "🥇", 2: "", 3: "🥉"}
             
             for i, (name, info) in enumerate(leaderboard, 1):
                 points = info['points']
@@ -346,7 +386,7 @@ class NassalMonitor:
                 
                 if points > 0:
                     points_str = f"+{points}"
-                    points_emoji = "🟢"
+                    points_emoji = ""
                 elif points < 0:
                     points_str = str(points)
                     points_emoji = "🔴"
@@ -354,7 +394,6 @@ class NassalMonitor:
                     points_str = "0"
                     points_emoji = "⚪"
                 
-                # Красивое форматирование
                 if i <= 3:
                     text += f"{medal} <b>{marker}{name}</b> — {points_emoji} <b>{points_str}</b>\n"
                 else:
@@ -397,14 +436,14 @@ class NassalMonitor:
                 text += f"{i}. {marker} <b>{name}</b> — {emoji} <b>{points_str}</b>\n"
             
             text += "\n━━━━━━━━━━━━━━━━━━━━\n"
-            text += "🔥 — сейчас активен"
+            text += " — сейчас активен"
             
             await message.answer(text, parse_mode="HTML")
         
         @self.dp.message(Command("streamer"))
         async def cmd_streamer(message: types.Message):
             if len(message.text.split()) < 2:
-                await message.answer(" Укажите номер или имя\nПример: /streamer 1")
+                await message.answer("❌ Укажите номер или имя\nПример: /streamer 1")
                 return
             
             query = message.text.split(maxsplit=1)[1].strip()
@@ -427,7 +466,7 @@ class NassalMonitor:
                 await message.answer(f"❌ Стример '{query}' не найден")
                 return
             
-            await message.answer(f"⏳ Загрузка информации о <b>{streamer_name}</b>...", parse_mode="HTML")
+            await message.answer(f" Загрузка информации о <b>{streamer_name}</b>...", parse_mode="HTML")
             info = await self.get_detailed_streamer_info(streamer_name)
             
             if info:
@@ -437,8 +476,35 @@ class NassalMonitor:
         
         @self.dp.message(Command("monitor"))
         async def cmd_monitor(message: types.Message):
-            chat_id = message.chat.id
-            thread_id = message.message_thread_id
+            args = message.text.split()[1:] if len(message.text.split()) > 1 else []
+            
+            if len(args) == 0:
+                chat_id = message.chat.id
+                thread_id = message.message_thread_id
+                chat_title = message.chat.title or 'Unknown'
+            elif len(args) == 1 and self.is_admin(message.from_user.id):
+                try:
+                    chat_id = int(args[0])
+                    thread_id = None
+                    chat_title = f"Группа {chat_id}"
+                except ValueError:
+                    await message.answer("❌ Неверный chat_id. Пример: /monitor -1002977868330")
+                    return
+            elif len(args) == 2 and self.is_admin(message.from_user.id):
+                try:
+                    chat_id = int(args[0])
+                    thread_id = int(args[1])
+                    chat_title = f"Группа {chat_id}, ветка {thread_id}"
+                except ValueError:
+                    await message.answer("❌ Неверные ID. Пример: /monitor -1002977868330 123")
+                    return
+            else:
+                if not self.is_admin(message.from_user.id):
+                    await message.answer("❌ Указание chat_id доступно только администраторам\n\nИспользуй просто: /monitor")
+                    return
+                else:
+                    await message.answer("❌ Неверный формат. Примеры:\n/monitor\n/monitor -1002977868330\n/monitor -1002977868330 123")
+                    return
             
             for group in self.monitoring_groups:
                 if group['chat_id'] == chat_id and group.get('thread_id') == thread_id:
@@ -447,7 +513,7 @@ class NassalMonitor:
             
             group_info = {
                 'chat_id': chat_id,
-                'chat_title': message.chat.title or 'Unknown',
+                'chat_title': chat_title,
                 'thread_id': thread_id,
                 'added_at': time.time()
             }
@@ -456,17 +522,24 @@ class NassalMonitor:
             self.save_groups()
             
             thread_info = f"\n📌 <b>Ветка ID:</b> {thread_id}" if thread_id else ""
+            chat_info = f"\n👥 <b>Группа:</b> {chat_title}"
+            chat_id_info = f"\n <b>Chat ID:</b> {chat_id}"
+            
             await message.answer(
-                f"🔔 <b>Мониторинг активирован!</b>\n\n"
+                f"🔔 <b>Мониторинг активирован!</b>\n"
+                f"{chat_info}"
+                f"{chat_id_info}"
+                f"{thread_info}\n\n"
                 f"Буду присылать сюда уведомления о:\n"
-                f"•  Изменениях в очках\n"
+                f"• 💰 Изменениях в очках\n"
                 f"• 🎮 Смене игр у стримеров\n"
-                f"• 📊 Изменениях позиций в топе"
-                f"{thread_info}",
+                f"• 📊 Изменениях позиций в рейтинге",
                 parse_mode="HTML"
             )
             
-            if not self.previous_data:
+            # ВАЖНО: Запускаем мониторинг если ещё не запущен
+            if not self.monitoring_active:
+                logger.info(" Запускаю мониторинг после добавления группы...")
                 asyncio.create_task(self.monitor_loop())
         
         @self.dp.message(Command("stop"))
@@ -475,6 +548,7 @@ class NassalMonitor:
                 await message.answer("❌ Эта команда только для администраторов")
                 return
             
+            self.monitoring_active = False
             await message.answer("👋 Бот остановлен")
             if self.session:
                 await self.session.close()
@@ -490,46 +564,75 @@ class NassalMonitor:
                     if info:
                         await message.answer(info, parse_mode="HTML")
                     else:
-                        await message.answer(f" Не удалось получить информацию о {name}")
+                        await message.answer(f"❌ Не удалось получить информацию о {name}")
                     return
         
         logger.info("🚀 Бот запущен!")
         logger.info(f"👥 Админы: {ADMINS}")
-        logger.info(f"📋 Групп мониторинга: {len(self.monitoring_groups)}")
+        logger.info(f" Групп мониторинга: {len(self.monitoring_groups)}")
+        
+        # ВАЖНО: Автоматически запускаем мониторинг при старте если есть группы
+        if self.monitoring_groups:
+            logger.info("🔄 Найденные группы — запускаю мониторинг автоматически...")
+            asyncio.create_task(self.monitor_loop())
+        else:
+            logger.info("⚠️ Групп мониторинга нет. Вызовите /monitor для добавления.")
+        
         await self.dp.start_polling(self.bot)
     
     async def monitor_loop(self):
-        logger.info("Запуск мониторинга...")
+        logger.info("🔄 Запуск monitor_loop...")
+        self.monitoring_active = True
         
+        # Инициализация — получаем начальное состояние
+        logger.info(" Получаю начальное состояние...")
         initial_data = await self.get_participants_data()
-        if initial_data:
-            self.previous_data = initial_data
-            logger.info(f"✅ Начальное состояние запомнено")
-        else:
-            logger.error("❌ Не удалось получить начальное состояние")
+        
+        if not initial_data:
+            logger.error(" Не удалось получить начальное состояние")
+            self.monitoring_active = False
             return
         
-        while True:
+        self.previous_data = initial_data
+        logger.info(f"✅ Начальное состояние запомнено ({len(initial_data)} участников)")
+        logger.info("🔍 Начинаю следить за изменениями...")
+        
+        # Основной цикл
+        cycle_count = 0
+        while self.monitoring_active:
             try:
+                cycle_count += 1
+                if cycle_count % 6 == 0:  # Логируем каждые 60 секунд (6 * 10 сек)
+                    logger.info(f"🔄 Цикл #{cycle_count}, групп: {len(self.monitoring_groups)}")
+                
                 current_data = await self.get_participants_data()
                 
-                if current_data and self.previous_data:
+                if not current_data:
+                    logger.warning("⚠️ Не удалось получить данные, пропускаю цикл")
+                    await asyncio.sleep(10)
+                    continue
+                
+                if self.previous_data:
                     changes = self.compare_data(self.previous_data, current_data)
                     
                     if changes:
+                        logger.info(f"📢 Найдено изменений: {len(changes)}")
                         notification = self._format_notification(changes)
                         await self.send_notification(notification)
-                        logger.info(f"📤 Отправлено уведомлений")
+                        logger.info(f"📤 Уведомления отправлены")
+                    else:
+                        logger.debug("✓ Изменений нет")
                 
                 self.previous_data = current_data
                 
             except Exception as e:
-                logger.error(f"❌ Ошибка в цикле: {e}")
+                logger.error(f"❌ Ошибка в цикле: {e}", exc_info=True)
             
             await asyncio.sleep(10)
+        
+        logger.info("⏹️ Мониторинг остановлен")
     
     def _format_notification(self, changes: list) -> str:
-        """Красиво форматирует уведомление"""
         notification = "🔔 <b>ИЗМЕНЕНИЯ НА NASSAL.PRO</b>\n"
         notification += "━━━━━━━━━━━━━━━━━━━━\n\n"
         notification += "\n".join(changes)
@@ -560,15 +663,15 @@ class NassalMonitor:
                 new_pos = new_positions[name]
                 
                 if old_pos != new_pos:
-                    diff = old_pos - new_pos  # Положительное = поднялся
+                    diff = old_pos - new_pos
                     if diff > 0:
                         arrow = "⬆️"
                         direction = "поднялся"
-                        emoji = ""
+                        emoji = "🚀"
                     else:
-                        arrow = "️"
+                        arrow = "⬇️"
                         direction = "упал"
-                        emoji = "📉"
+                        emoji = ""
                         diff = abs(diff)
                     
                     position_changes.append(
@@ -589,12 +692,12 @@ class NassalMonitor:
                 if old_points != new_points:
                     diff = new_points - old_points
                     if diff > 0:
-                        arrow = "⬆️"
+                        arrow = "️"
                         emoji = "💚"
                         sign = "+"
                     else:
                         arrow = "⬇️"
-                        emoji = "💔"
+                        emoji = ""
                         sign = ""
                     
                     points_changes.append(
@@ -625,7 +728,6 @@ class NassalMonitor:
         return changes
     
     def _get_position_word(self, count: int) -> str:
-        """Склонение слова 'позиция'"""
         if count == 1:
             return "позицию"
         elif 2 <= count <= 4:
