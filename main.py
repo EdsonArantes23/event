@@ -48,36 +48,227 @@ class NassalMonitor:
         self.chrome_options.add_argument("--disable-dev-shm-usage")
         self.chrome_options.add_argument("--window-size=1920,1080")
         self.chrome_options.add_argument("--disable-gpu")
-        self.chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        self.chrome_options.add_argument("--disable-software-rasterizer")
+        self.chrome_options.add_argument("--disable-extensions")
+        self.chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         
         self.driver = webdriver.Chrome(options=self.chrome_options)
+        self.driver.set_page_load_timeout(30)
         self.url = "https://nassal.pro/"
         
+    def click_first_popup(self) -> bool:
+        """Кликает по первому всплывающему окну (письму/сообщению)"""
+        try:
+            logger.info("🔍 Ищу первый попап (письмо)...")
+            
+            # Ждем появления любого кликабельного элемента на первом экране
+            time.sleep(3)  # Даем время на загрузку первого экрана
+            
+            # Делаем скриншот для отладки
+            try:
+                self.driver.save_screenshot("debug_step1_first_screen.png")
+                logger.info("📸 Скриншот первого экрана сохранен")
+            except:
+                pass
+            
+            # Пробуем найти кнопку/элемент для клика
+            button_clicked = False
+            
+            # Вариант 1: Ищем кнопку с любым текстом
+            try:
+                buttons = self.driver.find_elements(By.TAG_NAME, "button")
+                for btn in buttons:
+                    if btn.is_displayed() and btn.is_enabled():
+                        text = btn.text.strip()
+                        if text and len(text) > 0:
+                            logger.info(f"✅ Найден элемент на первом экране: '{text}'")
+                            ActionChains(self.driver).move_to_element(btn).click().perform()
+                            button_clicked = True
+                            time.sleep(2)  # Ждем перехода на следующий экран
+                            break
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось найти кнопку по тегу: {e}")
+            
+            # Вариант 2: Ищем любой кликабельный div/span с текстом
+            if not button_clicked:
+                try:
+                    clickable_elements = self.driver.find_elements(By.CSS_SELECTOR, "div[onclick], span[onclick], [role='button'], .button, .btn, [class*='button'], [class*='btn']")
+                    for elem in clickable_elements:
+                        if elem.is_displayed():
+                            logger.info(f"✅ Найден кликабельный элемент")
+                            ActionChains(self.driver).move_to_element(elem).click().perform()
+                            button_clicked = True
+                            time.sleep(2)
+                            break
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось найти кликабельный элемент: {e}")
+            
+            # Вариант 3: Ищем по координатам центра экрана (если ничего не нашли)
+            if not button_clicked:
+                try:
+                    # Кликаем в центр экрана
+                    logger.info("⚠️ Ничего не найдено, кликаю в центр экрана...")
+                    ActionChains(self.driver).move_by_offset(960, 540).click().perform()
+                    button_clicked = True
+                    time.sleep(2)
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось кликнуть в центр: {e}")
+            
+            if button_clicked:
+                logger.info("✅ Первый попап обработан")
+                return True
+            else:
+                logger.warning("⚠️ Не удалось обработать первый попап")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке первого попапа: {e}")
+            try:
+                self.driver.save_screenshot("debug_first_popup_error.png")
+            except:
+                pass
+            return False
+    
     def click_start_button(self) -> bool:
         """Кликает по кнопке 'НАЖМИТЕ ЧТОБЫ НАЧАТЬ'"""
         try:
-            start_button = WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'НАЖМИТЕ') and contains(text(), 'НАЧАТЬ')]"))
-            )
+            logger.info("🔍 Ищу кнопку 'НАЖМИТЕ ЧТОБЫ НАЧАТЬ'...")
             
-            ActionChains(self.driver).move_to_element(start_button).click().perform()
-            time.sleep(2)
-            
+            # Делаем скриншот перед поиском
             try:
-                WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".item, .participant, [class*='participant']"))
+                self.driver.save_screenshot("debug_step2_before_start.png")
+            except:
+                pass
+            
+            # Ждем появления кнопки (до 15 секунд)
+            button_found = False
+            
+            # Вариант 1: По тексту
+            try:
+                start_button = WebDriverWait(self.driver, 15).until(
+                    EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'НАЖМИТЕ') and contains(text(), 'НАЧАТЬ')]"))
                 )
-                logger.info("✅ Кнопка старта нажата, интерфейс загружен")
-                return True
+                logger.info("✅ Кнопка найдена по тексту")
+                button_found = True
             except TimeoutException:
-                logger.warning("⚠️ Интерфейс не загрузился после клика")
-                return False
+                logger.warning("⚠️ Кнопка не найдена по тексту")
+            
+            # Вариант 2: По любому элементу с большим текстом
+            if not button_found:
+                try:
+                    all_elements = self.driver.find_elements(By.TAG_NAME, "*")
+                    for elem in all_elements:
+                        try:
+                            text = elem.text.strip()
+                            if 'НАЖМИТЕ' in text or 'НАЧАТЬ' in text:
+                                if elem.is_displayed() and elem.is_enabled():
+                                    logger.info(f"✅ Найден элемент с текстом: '{text[:50]}'")
+                                    start_button = elem
+                                    button_found = True
+                                    break
+                        except:
+                            continue
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось найти по тексту: {e}")
+            
+            # Вариант 3: По CSS селекторам
+            if not button_found:
+                try:
+                    selectors = ["button", ".start-button", "[class*='start']", "[class*='begin']", ".btn", "[role='button']"]
+                    for selector in selectors:
+                        try:
+                            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                            for elem in elements:
+                                if elem.is_displayed() and elem.is_enabled():
+                                    text = elem.text.strip()
+                                    if len(text) > 5:
+                                        logger.info(f"✅ Найден элемент по CSS: '{text}'")
+                                        start_button = elem
+                                        button_found = True
+                                        break
+                            if button_found:
+                                break
+                        except:
+                            continue
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось найти по CSS: {e}")
+            
+            if button_found:
+                # Кликаем по кнопке
+                ActionChains(self.driver).move_to_element(start_button).click().perform()
+                logger.info("✅ Клик по кнопке старта выполнен")
                 
-        except TimeoutException:
-            logger.warning("⚠️ Кнопка старта не найдена (возможно уже нажата)")
-            return True
+                # Ждем загрузки основного интерфейса
+                time.sleep(5)
+                
+                # Делаем скриншот после клика
+                try:
+                    self.driver.save_screenshot("debug_step3_after_start.png")
+                except:
+                    pass
+                
+                # Проверяем, загрузился ли список участников
+                try:
+                    WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".item, .participant, [class*='participant']"))
+                    )
+                    logger.info("✅ Интерфейс со стримерами загружен")
+                    return True
+                except TimeoutException:
+                    logger.warning("⚠️ Интерфейс не загрузился после клика")
+                    return False
+            else:
+                # Кнопка не найдена - возможно уже нажата
+                logger.warning("⚠️ Кнопка старта не найдена, проверяю наличие интерфейса...")
+                
+                try:
+                    WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".item"))
+                    )
+                    logger.info("✅ Интерфейс уже загружен")
+                    return True
+                except:
+                    logger.error("❌ Интерфейс не загружен")
+                    self.driver.save_screenshot("debug_no_interface.png")
+                    return False
+                
         except Exception as e:
             logger.error(f"❌ Ошибка при клике по кнопке старта: {e}")
+            try:
+                self.driver.save_screenshot("debug_start_error.png")
+            except:
+                pass
+            return False
+    
+    def load_website(self) -> bool:
+        """Полная загрузка сайта с обработкой всех попапов"""
+        try:
+            logger.info("🌐 Загружаю сайт...")
+            self.driver.get(self.url)
+            time.sleep(3)  # Ждем загрузки первой страницы
+            
+            # ШАГ 1: Обрабатываем первый попап (письмо)
+            logger.info("📧 Шаг 1: Обрабатываю первый попап...")
+            if not self.click_first_popup():
+                logger.warning("⚠️ Первый попап не обработан, продолжаю...")
+            
+            time.sleep(2)  # Небольшая пауза между кликами
+            
+            # ШАГ 2: Кликаем по кнопке "НАЖМИТЕ ЧТОБЫ НАЧАТЬ"
+            logger.info("🚀 Шаг 2: Кликаю по кнопке старта...")
+            if not self.click_start_button():
+                logger.error("❌ Не удалось загрузить основной интерфейс")
+                return False
+            
+            logger.info("✅ Сайт полностью загружен!")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при загрузке сайта: {e}")
+            try:
+                self.driver.save_screenshot("debug_load_error.png")
+            except:
+                pass
             return False
     
     def get_streamer_keyboard(self) -> ReplyKeyboardMarkup:
@@ -96,16 +287,16 @@ class NassalMonitor:
     async def get_participants_data(self) -> Dict:
         """Получает данные всех участников с сайта"""
         try:
-            self.driver.get(self.url)
-            time.sleep(1)
-            
-            if not self.click_start_button():
-                logger.error("Не удалось загрузить основной интерфейс")
+            # Загружаем сайт с обработкой всех попапов
+            if not self.load_website():
+                logger.error("❌ Не удалось загрузить сайт")
                 return {}
             
             participants = {}
             
+            # Получаем всех участников из списка слева
             participant_items = self.driver.find_elements(By.CSS_SELECTOR, ".item")
+            logger.info(f"📊 Найдено участников: {len(participant_items)}")
             
             for item in participant_items:
                 try:
@@ -126,7 +317,7 @@ class NassalMonitor:
                         'timestamp': time.time()
                     }
                 except Exception as e:
-                    logger.warning(f"Не удалось распарсить участника: {e}")
+                    logger.warning(f"⚠️ Не удалось распарсить участника: {e}")
                     continue
             
             # Получаем текущее действие активного участника
@@ -139,14 +330,20 @@ class NassalMonitor:
                     'action': action_text,
                     'timestamp': time.time()
                 }
+                logger.info(f"⚡ Текущее действие: {action_text}")
                 
             except Exception as e:
-                logger.warning(f"Не удалось получить текущее действие: {e}")
+                logger.warning(f"⚠️ Не удалось получить текущее действие: {e}")
             
+            logger.info(f"✅ Получено данных: {len(participants)}")
             return participants
             
         except Exception as e:
-            logger.error(f"Ошибка при получении данных: {e}")
+            logger.error(f"❌ Ошибка при получении данных: {e}")
+            try:
+                self.driver.save_screenshot("debug_get_data.png")
+            except:
+                pass
             return {}
     
     def get_detailed_streamer_info(self, streamer_name: str) -> Optional[str]:
@@ -163,7 +360,7 @@ class NassalMonitor:
                     name_elem = item.find_element(By.CSS_SELECTOR, ".name")
                     if name_elem.text.strip() == streamer_name:
                         ActionChains(self.driver).move_to_element(item).click().perform()
-                        time.sleep(1.5)
+                        time.sleep(2)
                         break
                 except:
                     continue
@@ -201,7 +398,6 @@ class NassalMonitor:
             # Если стример активен, получаем ДЕТАЛЬНУЮ информацию
             if streamer_info['selected']:
                 try:
-                    # Проверяем, это игра или просто действие
                     try:
                         game_cover = self.driver.find_element(By.CSS_SELECTOR, ".game-cover-img")
                         is_game = True
@@ -209,7 +405,6 @@ class NassalMonitor:
                         is_game = False
                     
                     if is_game:
-                        # Получаем информацию об игре
                         try:
                             game_title = self.driver.find_element(By.CSS_SELECTOR, ".game-title-text").text.strip()
                             message += f"\n🎮 <b>Игра:</b> {game_title}"
@@ -228,7 +423,6 @@ class NassalMonitor:
                         except:
                             pass
                         
-                        # Получаем очки за игру
                         try:
                             reward_items = self.driver.find_elements(By.CSS_SELECTOR, ".reward-item")
                             for reward in reward_items:
@@ -238,19 +432,17 @@ class NassalMonitor:
                         except:
                             pass
                         
-                        # Главный угонщик
                         try:
                             crown_result = self.driver.find_element(By.CSS_SELECTOR, ".crown-result").text.strip()
                             message += f"\n👑 Главный угонщик: {crown_result}"
                         except:
                             pass
                     else:
-                        # Просто действие (не игра)
                         game_title = self.driver.find_element(By.CSS_SELECTOR, ".game-title-text").text.strip()
                         message += f"\n⚡ <b>Действие:</b> {game_title}"
                     
                 except Exception as e:
-                    logger.warning(f"Не удалось получить детали: {e}")
+                    logger.warning(f"⚠️ Не удалось получить детали: {e}")
                     message += f"\n⚡ <b>Статус:</b> Активен"
             else:
                 message += f"\n⚡ <b>Статус:</b> Не активен"
@@ -258,7 +450,7 @@ class NassalMonitor:
             return message
             
         except Exception as e:
-            logger.error(f"Ошибка при получении информации о стримере {streamer_name}: {e}")
+            logger.error(f"❌ Ошибка при получении информации о стримере {streamer_name}: {e}")
             return None
     
     async def send_notification(self, message: str):
@@ -269,7 +461,7 @@ class NassalMonitor:
                 parse_mode="HTML"
             )
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения: {e}")
+            logger.error(f"❌ Ошибка отправки сообщения: {e}")
     
     async def start(self):
         @self.dp.message(Command("start"))
@@ -299,7 +491,6 @@ class NassalMonitor:
         
         @self.dp.message(Command("points"))
         async def cmd_points(message: types.Message):
-            """Показывает текущие очки всех участников"""
             await message.answer("🔄 Получаю текущие очки...")
             
             data = await self.get_participants_data()
@@ -310,7 +501,6 @@ class NassalMonitor:
             
             text = "📊 <b>Текущие очки участников:</b>\n\n"
             
-            # Сортируем по позициям
             sorted_participants = sorted(
                 [(name, info) for name, info in data.items() if name != '_current_action'],
                 key=lambda x: x[1]['position']
@@ -321,14 +511,13 @@ class NassalMonitor:
                 position = info.get('position', 0)
                 selected = info.get('selected', False)
                 
-                # Форматируем очки с цветом
                 points_int = int(points) if points.lstrip('-').isdigit() else 0
                 if points_int > 0:
-                    points_emoji = ""
+                    points_emoji = "🟢"
                 elif points_int < 0:
                     points_emoji = "🔴"
                 else:
-                    points_emoji = ""
+                    points_emoji = "⚪"
                 
                 active_marker = "🔥" if selected else ""
                 text += f"{position}. {active_marker} {name} - {points_emoji} <b>{points}</b>\n"
@@ -384,7 +573,7 @@ class NassalMonitor:
         
         @self.dp.message(Command("status"))
         async def cmd_status(message: types.Message):
-            await message.answer(" Получаю текущий статус...")
+            await message.answer("🔄 Получаю текущий статус...")
             
             data = await self.get_participants_data()
             
@@ -405,7 +594,6 @@ class NassalMonitor:
             text = f"📊 <b>Текущий статус</b>\n\n"
             
             if active_streamer:
-                # Находим очки активного стримера
                 active_points = data.get(active_streamer, {}).get('points', '0')
                 text += f"🎯 <b>Активен:</b> {active_streamer}\n"
                 text += f"⭐ <b>Очки:</b> {active_points}\n"
@@ -444,11 +632,22 @@ class NassalMonitor:
                         await message.answer(f"❌ Не удалось получить информацию о {name}")
                     return
         
-        logger.info("Бот запущен!")
+        logger.info("🚀 Бот запущен!")
         await self.dp.start_polling(self.bot)
     
     async def monitor_loop(self):
         logger.info("Запуск мониторинга...")
+        
+        logger.info("🔄 Инициализация: получаем текущее состояние сайта...")
+        initial_data = await self.get_participants_data()
+        
+        if initial_data:
+            self.previous_data = initial_data
+            logger.info(f"✅ Начальное состояние запомнено ({len(initial_data)} участников)")
+            logger.info("🔍 Теперь буду следить за изменениями...")
+        else:
+            logger.error("❌ Не удалось получить начальное состояние")
+            return
         
         while True:
             try:
@@ -464,20 +663,18 @@ class NassalMonitor:
                             notification += f"\n\n⏰ {time.strftime('%H:%M:%S')}"
                             
                             await self.send_notification(notification)
-                            logger.info(f"Отправлено уведомлений: {len(changes)}")
+                            logger.info(f"📤 Отправлено уведомлений: {len(changes)}")
                     
                     self.previous_data = current_data
                     
             except Exception as e:
-                logger.error(f"Ошибка в цикле мониторинга: {e}")
+                logger.error(f"❌ Ошибка в цикле мониторинга: {e}")
             
             await asyncio.sleep(10)
     
     def compare_data(self, old_data: Dict, new_data: Dict) -> list:
-        """Сравнивает данные и находит изменения"""
         changes = []
         
-        # 1. Проверяем изменения текущего действия
         if '_current_action' in new_data and '_current_action' in old_data:
             old_action = old_data['_current_action'].get('action', '')
             new_action = new_data['_current_action'].get('action', '')
@@ -490,13 +687,12 @@ class NassalMonitor:
                         break
                 
                 changes.append(
-                    f" <b>Новое действие</b>\n"
+                    f"🎯 <b>Новое действие</b>\n"
                     f"👤 Участник: {active_streamer or 'Неизвестно'}\n"
                     f"❌ Было: {old_action}\n"
                     f"✅ Стало: {new_action}"
                 )
         
-        # 2. Проверяем изменения очков и позиций у каждого участника
         points_changes = []
         position_changes = []
         
@@ -505,22 +701,20 @@ class NassalMonitor:
                 continue
                 
             if name in old_data:
-                # Проверяем изменения очков
                 old_points = old_data[name].get('points', '0')
                 new_points = data.get('points', '0')
                 
                 if old_points != new_points:
-                    # Определяем, увеличились или уменьшились очки
                     try:
                         old_points_int = int(old_points)
                         new_points_int = int(new_points)
                         diff = new_points_int - old_points_int
                         
                         if diff > 0:
-                            arrow = "️"
+                            arrow = "⬆️"
                             sign = "+"
                         elif diff < 0:
-                            arrow = "️"
+                            arrow = "⬇️"
                             sign = ""
                         else:
                             arrow = ""
@@ -536,12 +730,10 @@ class NassalMonitor:
                             f"Очки: {old_points} → {new_points}"
                         )
                 
-                # Проверяем изменения позиции
                 old_pos = old_data[name].get('position', 0)
                 new_pos = data.get('position', 0)
                 
                 if old_pos != new_pos:
-                    # Определяем, поднялся или опустился
                     if new_pos < old_pos:
                         arrow = "⬆️"
                     else:
@@ -552,11 +744,9 @@ class NassalMonitor:
                         f"Позиция: {old_pos} → {new_pos}"
                     )
             
-            # Проверяем, стал ли стример активным
             if data.get('selected') and not old_data.get(name, {}).get('selected'):
                 changes.append(f"🔥 <b>{name}</b> стал активным!")
         
-        # Добавляем изменения очков и позиций в общий список
         if points_changes:
             changes.append("💰 <b>Изменения в очках:</b>\n" + "\n".join(points_changes))
         
@@ -567,17 +757,14 @@ class NassalMonitor:
 
 
 async def main():
-    # Получаем токен и chat_id из переменных окружения хоста
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     CHAT_ID = os.getenv("CHAT_ID", "-1003268832776")
     
-    # Проверяем наличие токена
     if not BOT_TOKEN:
-        logger.error(" Переменная окружения BOT_TOKEN не найдена!")
+        logger.error("❌ Переменная окружения BOT_TOKEN не найдена!")
         logger.error("Убедитесь, что переменная BOT_TOKEN задана в настройках хоста")
         return
     
-    # Преобразуем CHAT_ID в число
     try:
         CHAT_ID = int(CHAT_ID)
     except ValueError:
