@@ -125,7 +125,7 @@ class NassalMonitor:
                 participants = {}
                 raw_array = data.get('data', {}).get('array', [])
                 
-                logger.info(f"📊 API вернул {len(raw_array)} участников")
+                logger.info(f" API вернул {len(raw_array)} участников")
                 
                 for idx, item in enumerate(raw_array):
                     try:
@@ -152,18 +152,21 @@ class NassalMonitor:
                                 required_action = item.get('requiredAction') or {}
                                 action_kind = required_action.get('kind', '') if required_action else ''
                                 
+                                # ИСПРАВЛЕНИЕ: Проверяем наличие любой информации о стриме
                                 stream_info = item.get('stream') or []
                                 is_streaming = False
                                 streaming_platforms = []
                                 
                                 for stream in stream_info:
-                                    if stream.get('online', False):
+                                    platform = stream.get('platform', '')
+                                    username = stream.get('username', '')
+                                    online = stream.get('online', True)  # По умолчанию True если есть данные
+                                    
+                                    if platform or username:  # Если есть хоть какая-то информация
                                         is_streaming = True
-                                        platform = stream.get('platform', 'unknown')
-                                        username = stream.get('username', '')
                                         streaming_platforms.append({
-                                            'platform': platform,
-                                            'username': username
+                                            'platform': platform or 'unknown',
+                                            'username': username or ''
                                         })
                                 
                                 participants[name] = {
@@ -209,18 +212,21 @@ class NassalMonitor:
                             required_action = item.get('requiredAction') or {}
                             action_kind = required_action.get('kind', '') if required_action else ''
                             
+                            # ИСПРАВЛЕНИЕ: Проверяем наличие любой информации о стриме
                             stream_info = item.get('stream') or []
                             is_streaming = False
                             streaming_platforms = []
                             
                             for stream in stream_info:
-                                if stream.get('online', False):
+                                platform = stream.get('platform', '')
+                                username = stream.get('username', '')
+                                online = stream.get('online', True)  # По умолчанию True если есть данные
+                                
+                                if platform or username:  # Если есть хоть какая-то информация
                                     is_streaming = True
-                                    platform = stream.get('platform', 'unknown')
-                                    username = stream.get('username', '')
                                     streaming_platforms.append({
-                                        'platform': platform,
-                                        'username': username
+                                        'platform': platform or 'unknown',
+                                        'username': username or ''
                                     })
                             
                             participants[name] = {
@@ -427,7 +433,7 @@ class NassalMonitor:
             return
         
         if self.monitor_loop_task is not None and not self.monitor_loop_task.done():
-            logger.warning("⚠️ Цикл мониторинга уже работает!")
+            logger.warning("️ Цикл мониторинга уже работает!")
             return
         
         self.monitor_loop_task = asyncio.create_task(self.monitor_loop())
@@ -440,7 +446,7 @@ class NassalMonitor:
                 await message.answer("❌ Только админ")
                 return
             
-            await message.answer("🔍 Получаю данные...")
+            await message.answer(" Получаю данные...")
             
             if not self.session:
                 self.session = aiohttp.ClientSession()
@@ -449,7 +455,7 @@ class NassalMonitor:
                 async with self.session.get(API_URL) as response:
                     data = await response.json()
                     
-                    text = f"📊 <b>Данные API:</b>\n\n"
+                    text = f" <b>Данные API:</b>\n\n"
                     
                     for idx, item in enumerate(data.get('data', {}).get('array', [])):
                         if item is None:
@@ -458,11 +464,15 @@ class NassalMonitor:
                         player = item.get('player')
                         name = player.get('name', '???') if player else '???'
                         
+                        # УЛУЧШЕННАЯ ОТЛАДКА СТРИМА
                         stream_info = item.get('stream') or []
-                        online_platforms = []
+                        stream_details = []
                         for s in stream_info:
-                            if s.get('online', False):
-                                online_platforms.append(s.get('platform', 'unknown'))
+                            platform = s.get('platform', '')
+                            username = s.get('username', '')
+                            online = s.get('online', 'N/A')
+                            if platform or username:
+                                stream_details.append(f"{platform}({username})[online={online}]")
                         
                         required = item.get('requiredAction') or {}
                         action = required.get('kind', '')
@@ -470,7 +480,7 @@ class NassalMonitor:
                         timer = auction.get('timerStartedAt', '')
                         
                         text += f"<b>{idx+1}. {name}</b>\n"
-                        text += f"   Стрим: {'онлайн' if online_platforms else 'оффлайн'}\n"
+                        text += f"   Стрим: {', '.join(stream_details) if stream_details else 'нет'}\n"
                         text += f"   Action: {action or '-'}\n"
                         text += f"   Timer: {timer or '-'}\n"
                         text += f"   Игра: {auction.get('title', '-')}\n\n"
@@ -509,7 +519,7 @@ class NassalMonitor:
             self.monitoring_groups.append(group_info)
             self.save_groups()
             
-            await message.answer(f"✅ Добавлена\n👥 {message.chat.title}\n {chat_id}")
+            await message.answer(f"✅ Добавлена\n👥 {message.chat.title}\n🆔 {chat_id}")
             
             self.start_monitoring()
         
@@ -846,7 +856,7 @@ class NassalMonitor:
                 await message.answer(f"❌ '{query}' не найден")
                 return
             
-            await message.answer(f"⏳ Загрузка...", parse_mode="HTML")
+            await message.answer(f" Загрузка...", parse_mode="HTML")
             info = await self.get_detailed_streamer_info(streamer_name)
             
             if info:
@@ -1074,7 +1084,7 @@ class NassalMonitor:
                         )
         
         if game_changes:
-            changes.append(" <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_changes))
+            changes.append("🎮 <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_changes))
         
         return changes
 
