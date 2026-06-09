@@ -130,6 +130,7 @@ class NassalMonitor:
         return len(clean)
     
     def _format_time_duration(self, seconds: int) -> str:
+        """Форматирует секунды в читаемый формат"""
         if seconds < 0:
             seconds = 0
         hours = seconds // 3600
@@ -142,6 +143,7 @@ class NassalMonitor:
             return f"{seconds} сек"
     
     def _parse_hltb_time(self, time_str: str) -> str:
+        """Парсит строку HLTB времени"""
         if not time_str:
             return ""
         time_str = time_str.strip().lower()
@@ -190,6 +192,7 @@ class NassalMonitor:
                                 game_reward = auction_result.get('ggpReward', 0)
                                 game_penalty = auction_result.get('ggpPenalty', 0)
                                 timer_started = auction_result.get('timerStartedAt', '')
+                                # HLTB и время в игре
                                 hltb_info = auction_result.get('hltb', '')
                                 hltb_seconds = auction_result.get('hltbSeconds', 0)
                                 played_time = auction_result.get('playedTime', 0)
@@ -245,6 +248,7 @@ class NassalMonitor:
                             game_reward = auction_result.get('ggpReward', 0) if auction_result else 0
                             game_penalty = auction_result.get('ggpPenalty', 0) if auction_result else 0
                             timer_started = auction_result.get('timerStartedAt', '') if auction_result else ''
+                            # HLTB и время в игре
                             hltb_info = auction_result.get('hltb', '')
                             hltb_seconds = auction_result.get('hltbSeconds', 0)
                             played_time = auction_result.get('playedTime', 0)
@@ -391,6 +395,7 @@ class NassalMonitor:
             game_type = info.get('game_type', '')
             action_kind = info.get('action_kind', '')
             timer_started = info.get('timer_started', '')
+            # Получаем HLTB и время в игре
             hltb_info = info.get('hltb_info', '')
             hltb_seconds = info.get('hltb_seconds', 0)
             played_time = info.get('played_time', 0)
@@ -401,9 +406,11 @@ class NassalMonitor:
                     message += f"\n🎮 <b>Игра:</b> {game_title}"
                 else:
                     message += f"\n⚡ <b>Действие:</b> {game_title}"
+                # HLTB
                 if hltb_info or hltb_seconds > 0:
                     hltb_formatted = self._parse_hltb_time(hltb_info) if hltb_info else self._format_time_duration(hltb_seconds)
                     message += f"\n⏱️ <b>HLTB:</b> {hltb_formatted}"
+                # Время в игре
                 if played_time > 0:
                     played_formatted = self._format_time_duration(played_time)
                     message += f"\n⏳ <b>Время в игре:</b> {played_formatted}"
@@ -425,7 +432,7 @@ class NassalMonitor:
     
     async def send_notification(self, message: str):
         if not self.monitoring_groups:
-            logger.warning("️ Нет групп для отправки")
+            logger.warning("⚠️ Нет групп для отправки")
             return
         success_count = 0
         for group in self.monitoring_groups:
@@ -534,7 +541,7 @@ class NassalMonitor:
                     chat_id = int(args[0])
                     thread_id = None
                 except:
-                    await message.answer("❌ Неверный ID")
+                    await message.answer(" Неверный ID")
                     return
             elif len(args) == 2:
                 try:
@@ -555,7 +562,7 @@ class NassalMonitor:
                 self.save_groups()
                 await message.answer(f"✅ Удалена: {chat_id}" + (f" (ветка {thread_id})" if thread_id else ""))
             else:
-                await message.answer("❌ Такая группа не найдена в списке")
+                await message.answer(" Такая группа не найдена в списке")
         
         @self.dp.message(Command("clear_groups"))
         async def cmd_clear_groups(message: types.Message):
@@ -565,7 +572,7 @@ class NassalMonitor:
             count = len(self.monitoring_groups)
             self.monitoring_groups = []
             self.save_groups()
-            await message.answer(f"️ Очищено! Удалено групп: {count}")
+            await message.answer(f"🗑️ Очищено! Удалено групп: {count}")
         
         @self.dp.message(Command("list_groups"))
         async def cmd_list_groups(message: types.Message):
@@ -584,7 +591,7 @@ class NassalMonitor:
         @self.dp.message(Command("test_notify"))
         async def cmd_test_notify(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
+                await message.answer(" Только админ")
                 return
             await self.send_notification("🔔 <b>Тест</b>\n\n✅ Работает!")
             await message.answer("✅ Отправлено")
@@ -596,7 +603,7 @@ class NassalMonitor:
                 return
             chat_id = message.chat.id
             thread_id = message.message_thread_id
-            text = f"🆔 Chat ID: <code>{chat_id}</code>\n"
+            text = f" Chat ID: <code>{chat_id}</code>\n"
             if thread_id:
                 text += f"📌 Thread ID: <code>{thread_id}</code>"
             await message.answer(text, parse_mode="HTML")
@@ -626,14 +633,14 @@ class NassalMonitor:
                 )
             status_text = f"\n📡 <b>Мониторинг:</b> {'🟢 активен' if self.monitoring_active else '🔴 неактивен'}"
             await message.answer(
-                " <b>Бот Nassal.pro</b>\n\n"
+                "🤖 <b>Бот Nassal.pro</b>\n\n"
                 "📋 <b>Команды:</b>\n\n"
                 "/status 📊 статус всех стримеров\n"
-                "/rating 🏆 рейтинг\n"
+                "/rating  рейтинг\n"
                 "/points 📊 таблица\n"
                 "/streamer [номер/имя] 👤 инфо\n"
                 "/list 📝 список\n"
-                "/monitor 🔔 мониторинг"
+                "/monitor  мониторинг"
                 + status_text
                 + admin_text,
                 reply_markup=self.get_streamer_keyboard()
@@ -662,14 +669,14 @@ class NassalMonitor:
                 streaming_platforms = info.get('streaming_platforms', [])
                 stream_icon = self._format_streaming_status_short(is_streaming, streaming_platforms)
                 activity = self._format_activity_short(info)
-                text += f" <b>{name}</b> {stream_icon}\n"
-                text += f"🏆 {real_position} место | ⭐ Очки: {points_str}\n"
+                text += f"👤 <b>{name}</b> {stream_icon}\n"
+                text += f"🏆 {real_position} место |  Очки: {points_str}\n"
                 text += f"{activity}\n\n"
             text += "━━━━━━━━━━━━━━━━━━━━\n"
             text += "🟢 — онлайн | 🔴 — оффлайн"
             if len(text) > 4000:
                 header = "📊 <b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-                footer = "\n━━━━━━━━━━━━━━━━━━━━\n🟢 — онлайн |  — оффлайн"
+                footer = "\n━━━━━━━━━━━━━━━━━━━━\n — онлайн | 🔴 — оффлайн"
                 parts = []
                 current_part = header
                 current_len = len(header)
@@ -686,7 +693,7 @@ class NassalMonitor:
                     streaming_platforms = info.get('streaming_platforms', [])
                     stream_icon = self._format_streaming_status_short(is_streaming, streaming_platforms)
                     activity = self._format_activity_short(info)
-                    block = f"👤 <b>{name}</b> {stream_icon}\n🏆 {real_position} место | ⭐ Очки: {points_str}\n{activity}\n\n"
+                    block = f"👤 <b>{name}</b> {stream_icon}\n {real_position} место | ⭐ Очки: {points_str}\n{activity}\n\n"
                     if current_len + len(block) + len(footer) > 4000:
                         current_part += footer
                         parts.append(current_part)
@@ -859,19 +866,19 @@ class NassalMonitor:
                     return
         logger.info("🚀 Бот запущен!")
         if self.monitoring_groups:
-            logger.info(" Запускаю мониторинг...")
+            logger.info("🔄 Запускаю мониторинг...")
             self.start_monitoring()
         await self.dp.start_polling(self.bot)
     
     async def monitor_loop(self):
         if self.monitoring_active:
-            logger.warning("⚠️ Мониторинг уже активен!")
+            logger.warning("️ Мониторинг уже активен!")
             return
         logger.info("🔄 Запуск monitor_loop...")
         self.monitoring_active = True
         initial_data = await self.get_participants_data()
         if not initial_data:
-            logger.error("❌ Не удалось получить данные")
+            logger.error(" Не удалось получить данные")
             self.monitoring_active = False
             return
         self.previous_data = initial_data
@@ -892,7 +899,7 @@ class NassalMonitor:
                         logger.info(f"📤 Отправлено уведомление")
                 self.previous_data = current_data
             except Exception as e:
-                logger.error(f"❌ Ошибка: {e}")
+                logger.error(f" Ошибка: {e}")
             await asyncio.sleep(10)
         logger.info("⏹️ Мониторинг остановлен")
     
@@ -924,8 +931,8 @@ class NassalMonitor:
                         word_num = self._number_to_word(diff)
                         pos_word = self._get_position_word(diff)
                         position_changes.append(
-                            f"🚀 <b>{name}</b>: было {old_pos} место 🟢 стало {new_pos} место\n"
-                            f"   ️ поднялся на {word_num} {pos_word}"
+                            f" <b>{name}</b>: было {old_pos} место 🟢 стало {new_pos} место\n"
+                            f"   ↗️ поднялся на {word_num} {pos_word}"
                         )
                     else:
                         abs_diff = abs(diff)
@@ -948,7 +955,7 @@ class NassalMonitor:
                         emoji = "💚"
                         sign = "+"
                     else:
-                        emoji = ""
+                        emoji = "💔"
                         sign = ""
                     points_changes.append(
                         f"{emoji} <b>{name}</b>: {old_points} → {new_points} ({sign}{diff})"
@@ -967,11 +974,11 @@ class NassalMonitor:
                         hltb_formatted = self._parse_hltb_time(hltb_info) if hltb_info else self._format_time_duration(hltb_seconds)
                         game_changes.append(
                             f"🎮 <b>{name}</b> начал играть: <b>{new_game}</b>\n"
-                            f"⏱️ <b>HLTB:</b> {hltb_formatted}" if hltb_formatted else ""
+                            f"️ <b>HLTB:</b> {hltb_formatted}" if hltb_formatted else ""
                         )
                     elif old_game and not new_game:
                         game_changes.append(
-                            f"⏹️ <b>{name}</b> закончил: <b>{old_game}</b>"
+                            f"️ <b>{name}</b> закончил: <b>{old_game}</b>"
                         )
                     elif old_game and new_game:
                         hltb_formatted = self._parse_hltb_time(hltb_info) if hltb_info else self._format_time_duration(hltb_seconds)
