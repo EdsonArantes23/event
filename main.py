@@ -55,6 +55,8 @@ class NassalMonitor:
         self.monitoring_active: bool = False
         self.player_cache: Dict[str, Dict] = {}
         self.monitor_loop_task: Optional[asyncio.Task] = None
+        # Хранилище времени начала игр для каждого стримера
+        self.game_start_times: Dict[str, Dict] = {}
     
     def load_groups(self) -> List[Dict]:
         try:
@@ -108,7 +110,6 @@ class NassalMonitor:
     def _visible_len(self, text: str) -> int:
         """Считает видимую длину строки без HTML-тегов и эмодзи"""
         clean = re.sub(r'<[^>]+>', '', text)
-        # Убираем эмодзи для точного подсчёта
         emoji_pattern = re.compile(
             "["
             "\U0001F600-\U0001F64F"
@@ -130,6 +131,53 @@ class NassalMonitor:
             "]+", flags=re.UNICODE)
         clean = emoji_pattern.sub('', clean)
         return len(clean)
+    
+    def _format_time_duration(self, seconds: int) -> str:
+        """Форматирует время в читаемый формат"""
+        if seconds < 0:
+            seconds = 0
+        
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        
+        if hours > 0:
+            return f"{hours} ч {minutes} мин {secs} сек"
+        elif minutes > 0:
+            return f"{minutes} мин {secs} сек"
+        else:
+            return f"{secs} сек"
+    
+    def _parse_hltb_time(self, time_str: str) -> str:
+        """Парсит строку времени HLTB в читаемый формат"""
+        if not time_str:
+            return ""
+        
+        # Удаляем лишние символы и приводим к нижнему регистру
+        time_str = time_str.strip().lower()
+        
+        # Пробуем распарсить различные форматы
+        # Например: "11 часов 7 минут" или "11ч 7мин"
+        hours = 0
+        minutes = 0
+        
+        # Ищем часы
+        hour_match = re.search(r'(\d+)\s*(?:час|ч)', time_str)
+        if hour_match:
+            hours = int(hour_match.group(1))
+        
+        # Ищем минуты
+        min_match = re.search(r'(\d+)\s*(?:минут|мин)', time_str)
+        if min_match:
+            minutes = int(min_match.group(1))
+        
+        if hours > 0 or minutes > 0:
+            if hours > 0:
+                return f"{hours} ч {minutes} мин"
+            else:
+                return f"{minutes} мин"
+        
+        return time_str
     
     async def get_participants_data(self) -> Dict:
         try:
@@ -171,10 +219,16 @@ class NassalMonitor:
                                 game_penalty = auction_result.get('ggpPenalty', 0)
                                 timer_started = auction_result.get('timerStartedAt', '')
                                 
+                                # HLTB информация
+                                hltb_info = auction_result.get('hltb', '')
+                                hltb_seconds = auction_result.get('hltbSeconds', 0)
+                                
+                                # Время в игре
+                                played_time = auction_result.get('playedTime', 0)
+                                
                                 required_action = item.get('requiredAction') or {}
                                 action_kind = required_action.get('kind', '') if required_action else ''
                                 
-                                # ОРИГИНАЛЬНАЯ ЛОГИКА СТРИМА
                                 stream_info = item.get('stream') or []
                                 is_streaming = False
                                 streaming_platforms = []
@@ -200,8 +254,20 @@ class NassalMonitor:
                                     'timer_started': timer_started,
                                     'is_streaming': is_streaming,
                                     'streaming_platforms': streaming_platforms,
+                                    'hltb_info': hltb_info,
+                                    'hltb_seconds': hltb_seconds,
+                                    'played_time': played_time,
                                     'timestamp': time.time()
                                 }
+                                
+                                # Отслеживаем начало новой игры
+                                if game_title and timer_started:
+                                    if name not in self.game_start_times or self.game_start_times[name].get('game') != game_title:
+                                        self.game_start_times[name] = {
+                                            'game': game_title,
+                                            'start_time': time.time(),
+                                            'timer_started': timer_started
+                                        }
                             else:
                                 continue
                         else:
@@ -229,10 +295,16 @@ class NassalMonitor:
                             game_penalty = auction_result.get('ggpPenalty', 0) if auction_result else 0
                             timer_started = auction_result.get('timerStartedAt', '') if auction_result else ''
                             
+                            # HLTB информация
+                            hltb_info = auction_result.get('hltb', '')
+                            hltb_seconds = auction_result.get('hltbSeconds', 0)
+                            
+                            # Время в игре
+                            played_time = auction_result.get('playedTime', 0)
+                            
                             required_action = item.get('requiredAction') or {}
                             action_kind = required_action.get('kind', '') if required_action else ''
                             
-                            # ОРИГИНАЛЬНАЯ ЛОГИКА СТРИМА
                             stream_info = item.get('stream') or []
                             is_streaming = False
                             streaming_platforms = []
@@ -258,8 +330,20 @@ class NassalMonitor:
                                 'timer_started': timer_started,
                                 'is_streaming': is_streaming,
                                 'streaming_platforms': streaming_platforms,
+                                'hltb_info': hltb_info,
+                                'hltb_seconds': hltb_seconds,
+                                'played_time': played_time,
                                 'timestamp': time.time()
                             }
+                            
+                            # Отслеживаем начало новой игры
+                            if game_title and timer_started:
+                                if name not in self.game_start_times or self.game_start_times[name].get('game') != game_title:
+                                    self.game_start_times[name] = {
+                                        'game': game_title,
+                                        'start_time': time.time(),
+                                        'timer_started': timer_started
+                                    }
                         
                     except Exception as e:
                         logger.warning(f"⚠️ [{idx}] Ошибка парсинга: {e}")
@@ -392,6 +476,9 @@ class NassalMonitor:
             game_type = info.get('game_type', '')
             action_kind = info.get('action_kind', '')
             timer_started = info.get('timer_started', '')
+            hltb_info = info.get('hltb_info', '')
+            hltb_seconds = info.get('hltb_seconds', 0)
+            played_time = info.get('played_time', 0)
             
             if game_title:
                 game_reward = info.get('game_reward', 0)
@@ -401,6 +488,29 @@ class NassalMonitor:
                     message += f"\n🎮 <b>Игра:</b> {game_title}"
                 else:
                     message += f"\n⚡ <b>Действие:</b> {game_title}"
+                
+                # HLTB информация
+                if hltb_info or hltb_seconds > 0:
+                    hltb_formatted = self._parse_hltb_time(hltb_info) if hltb_info else self._format_time_duration(hltb_seconds)
+                    message += f"\n⏱️ <b>HLTB:</b> {hltb_formatted}"
+                
+                # Время в игре
+                if played_time > 0:
+                    played_formatted = self._format_time_duration(played_time)
+                    message += f"\n⏳ <b>Время в игре:</b> {played_formatted}"
+                
+                # Время с начала игры (если есть timer_started)
+                if timer_started:
+                    try:
+                        from datetime import datetime
+                        start_dt = datetime.fromisoformat(timer_started.replace('Z', '+00:00'))
+                        now = datetime.now(start_dt.tzinfo) if start_dt.tzinfo else datetime.now()
+                        elapsed = (now - start_dt).total_seconds()
+                        if elapsed > 0:
+                            elapsed_formatted = self._format_time_duration(int(elapsed))
+                            message += f"\n🕐 <b>Прошло с начала:</b> {elapsed_formatted}"
+                    except:
+                        pass
                 
                 if game_reward:
                     message += f"\n💰 Награда: +{game_reward}"
@@ -492,11 +602,15 @@ class NassalMonitor:
                         action = required.get('kind', '')
                         auction = item.get('currentAuctionResult') or {}
                         timer = auction.get('timerStartedAt', '')
+                        hltb = auction.get('hltb', '')
+                        played = auction.get('playedTime', 0)
                         
                         text += f"<b>{idx+1}. {name}</b>\n"
                         text += f"   Стрим: {'онлайн' if online_platforms else 'оффлайн'}\n"
                         text += f"   Action: {action or '-'}\n"
                         text += f"   Timer: {timer or '-'}\n"
+                        text += f"   HLTB: {hltb or '-'}\n"
+                        text += f"   Played: {played} сек\n"
                         text += f"   Игра: {auction.get('title', '-')}\n\n"
                     
                     if len(text) > 4000:
@@ -663,7 +777,7 @@ class NassalMonitor:
             await message.answer(
                 "🤖 <b>Бот Nassal.pro</b>\n\n"
                 "📋 <b>Команды:</b>\n\n"
-                "/status 📊 статус всех стримеров\n"
+                "/all 📊 все стримеры\n"
                 "/rating 🏆 рейтинг\n"
                 "/points 📊 таблица\n"
                 "/streamer [номер/имя] 👤 инфо\n"
@@ -674,8 +788,8 @@ class NassalMonitor:
                 reply_markup=self.get_streamer_keyboard()
             )
         
-        @self.dp.message(Command("status"))
-        async def cmd_status(message: types.Message):
+        @self.dp.message(Command("all"))
+        async def cmd_all(message: types.Message):
             await message.answer("🔄 Получаю статусы...")
             data = await self.get_participants_data()
             
@@ -685,7 +799,7 @@ class NassalMonitor:
             
             leaderboard = self._get_leaderboard(data)
             
-            text = "📊 <b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n"
+            text = "📊 <b>ВСЕ СТРИМЕРЫ</b>\n"
             text += "━━━━━━━━━━━━━━━━━━━━\n\n"
             
             for name, info in leaderboard:
@@ -713,7 +827,7 @@ class NassalMonitor:
             text += "🟢 — онлайн | 🔴 — оффлайн"
             
             if len(text) > 4000:
-                header = "📊 <b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+                header = "📊 <b>ВСЕ СТРИМЕРЫ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
                 footer = "\n━━━━━━━━━━━━━━━━━━━━\n🟢 — онлайн | 🔴 — оффлайн"
                 
                 parts = []
@@ -779,14 +893,12 @@ class NassalMonitor:
             
             medals = {1: "🥇", 2: "🥈", 3: "🥉"}
             
-            # Ширина базовой части для выравнивания
             MAX_WIDTH = 28
             
             for i, (name, info) in enumerate(leaderboard, 1):
                 points = info['points']
                 medal = medals.get(i, f"{i}.")
                 
-                # Очки
                 if points > 0:
                     points_str = f"+{points}"
                 elif points < 0:
@@ -794,17 +906,12 @@ class NassalMonitor:
                 else:
                     points_str = "0"
                 
-                # Статус стрима - используем ОРИГИНАЛЬНУЮ логику из info
                 is_streaming = info.get('is_streaming', False)
                 stream_emoji = "🟢" if is_streaming else "🔴"
                 
-                # Базовая строка
                 base = f"{medal} {name} {points_str}"
-                
-                # Считаем видимую длину (без эмодзи и тегов)
                 visible = self._visible_len(base)
                 
-                # Добавляем пробелы для выравнивания
                 if visible < MAX_WIDTH:
                     spaces = " " * (MAX_WIDTH - visible)
                 else:
@@ -1082,19 +1189,46 @@ class NassalMonitor:
             if name in old_data:
                 old_game = old_data[name].get('game_title', '')
                 new_game = data.get('game_title', '')
+                hltb_info = data.get('hltb_info', '')
+                hltb_seconds = data.get('hltb_seconds', 0)
+                played_time = data.get('played_time', 0)
                 
                 if old_game != new_game:
                     if not old_game and new_game:
+                        # Начал играть
+                        hltb_formatted = self._parse_hltb_time(hltb_info) if hltb_info else self._format_time_duration(hltb_seconds)
                         game_changes.append(
-                            f"🎮 <b>{name}</b> начал играть: <b>{new_game}</b>"
+                            f"🎮 <b>{name}</b> начал играть: <b>{new_game}</b>\n"
+                            f"⏱️ <b>HLTB:</b> {hltb_formatted}" if hltb_formatted else ""
                         )
                     elif old_game and not new_game:
-                        game_changes.append(
-                            f"⏹️ <b>{name}</b> закончил: <b>{old_game}</b>"
-                        )
+                        # Закончил играть - показываем сколько сыграл
+                        if name in self.game_start_times:
+                            start_info = self.game_start_times[name]
+                            if start_info.get('game') == old_game:
+                                elapsed = int(time.time() - start_info['start_time'])
+                                elapsed_formatted = self._format_time_duration(elapsed)
+                                game_changes.append(
+                                    f"⏹️ <b>{name}</b> закончил: <b>{old_game}</b>\n"
+                                    f"⏳ <b>Сыграл:</b> {elapsed_formatted}"
+                                )
+                                # Очищаем запись
+                                del self.game_start_times[name]
+                            else:
+                                game_changes.append(
+                                    f"⏹️ <b>{name}</b> закончил: <b>{old_game}</b>"
+                                )
+                        else:
+                            game_changes.append(
+                                f"⏹️ <b>{name}</b> закончил: <b>{old_game}</b>"
+                            )
                     elif old_game and new_game:
+                        # Сменил игру
+                        hltb_formatted = self._parse_hltb_time(hltb_info) if hltb_info else self._format_time_duration(hltb_seconds)
                         game_changes.append(
-                            f"🔄 <b>{name}</b> сменил игру:\n{old_game} → {new_game}"
+                            f"🔄 <b>{name}</b> сменил игру:\n"
+                            f"{old_game} → {new_game}\n"
+                            f"⏱️ <b>HLTB:</b> {hltb_formatted}" if hltb_formatted else ""
                         )
         
         if game_changes:
