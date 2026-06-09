@@ -135,32 +135,13 @@ class NassalMonitor:
             seconds = 0
         hours = seconds // 3600
         minutes = (seconds % 3600) // 60
+        secs = seconds % 60
         if hours > 0:
-            return f"{hours} ч {minutes} мин"
+            return f"{hours} ч {minutes} мин {secs} сек"
         elif minutes > 0:
-            return f"{minutes} мин"
+            return f"{minutes} мин {secs} сек"
         else:
-            return f"{seconds} сек"
-    
-    def _parse_hltb_time(self, time_str: str) -> str:
-        """Парсит строку HLTB времени"""
-        if not time_str:
-            return ""
-        time_str = time_str.strip().lower()
-        hours = 0
-        minutes = 0
-        hour_match = re.search(r'(\d+)\s*(?:час|ч)', time_str)
-        if hour_match:
-            hours = int(hour_match.group(1))
-        min_match = re.search(r'(\d+)\s*(?:минут|мин)', time_str)
-        if min_match:
-            minutes = int(min_match.group(1))
-        if hours > 0 or minutes > 0:
-            if hours > 0:
-                return f"{hours} ч {minutes} мин"
-            else:
-                return f"{minutes} мин"
-        return time_str
+            return f"{secs} сек"
     
     async def get_participants_data(self) -> Dict:
         try:
@@ -175,6 +156,13 @@ class NassalMonitor:
                 participants = {}
                 raw_array = data.get('data', {}).get('array', [])
                 logger.info(f"📊 API вернул {len(raw_array)} участников")
+                
+                # Отладка: выводим ключи auction_result первого игрока
+                if raw_array:
+                    first_item = raw_array[0]
+                    auction = first_item.get('currentAuctionResult') or {}
+                    logger.debug(f"🔍 Ключи auction_result: {list(auction.keys())}")
+
                 for idx, item in enumerate(raw_array):
                     try:
                         if item is None:
@@ -192,10 +180,6 @@ class NassalMonitor:
                                 game_reward = auction_result.get('ggpReward', 0)
                                 game_penalty = auction_result.get('ggpPenalty', 0)
                                 timer_started = auction_result.get('timerStartedAt', '')
-                                # HLTB и время в игре
-                                hltb_info = auction_result.get('hltb', '')
-                                hltb_seconds = auction_result.get('hltbSeconds', 0)
-                                played_time = auction_result.get('playedTime', 0)
                                 required_action = item.get('requiredAction') or {}
                                 action_kind = required_action.get('kind', '') if required_action else ''
                                 stream_info = item.get('stream') or []
@@ -221,9 +205,6 @@ class NassalMonitor:
                                     'timer_started': timer_started,
                                     'is_streaming': is_streaming,
                                     'streaming_platforms': streaming_platforms,
-                                    'hltb_info': hltb_info,
-                                    'hltb_seconds': hltb_seconds,
-                                    'played_time': played_time,
                                     'timestamp': time.time()
                                 }
                             else:
@@ -248,10 +229,6 @@ class NassalMonitor:
                             game_reward = auction_result.get('ggpReward', 0) if auction_result else 0
                             game_penalty = auction_result.get('ggpPenalty', 0) if auction_result else 0
                             timer_started = auction_result.get('timerStartedAt', '') if auction_result else ''
-                            # HLTB и время в игре
-                            hltb_info = auction_result.get('hltb', '')
-                            hltb_seconds = auction_result.get('hltbSeconds', 0)
-                            played_time = auction_result.get('playedTime', 0)
                             required_action = item.get('requiredAction') or {}
                             action_kind = required_action.get('kind', '') if required_action else ''
                             stream_info = item.get('stream') or []
@@ -277,9 +254,6 @@ class NassalMonitor:
                                 'timer_started': timer_started,
                                 'is_streaming': is_streaming,
                                 'streaming_platforms': streaming_platforms,
-                                'hltb_info': hltb_info,
-                                'hltb_seconds': hltb_seconds,
-                                'played_time': played_time,
                                 'timestamp': time.time()
                             }
                     except Exception as e:
@@ -326,20 +300,20 @@ class NassalMonitor:
         if not is_streaming or not platforms:
             return "🔴 <b>Стрим:</b> Оффлайн"
         platform_emojis = {
-            'twitch': ' Twitch',
-            'youtube': '🔴 YouTube',
-            'kick': '🟢 Kick',
+            'twitch': '🟣 Twitch',
+            'youtube': ' YouTube',
+            'kick': ' Kick',
             'telegram': '✈️ Telegram',
             'vk': '🔵 VK',
             'wtv': '📺 WTV',
-            'vklive': '🔵 VK Live'
+            'vklive': ' VK Live'
         }
         platform_names = []
         for p in platforms:
             platform = p.get('platform', '').lower()
             emoji = platform_emojis.get(platform, platform.capitalize())
             platform_names.append(emoji)
-        return f"🟢 <b>Стрим:</b> Онлайн ({', '.join(platform_names)})"
+        return f" <b>Стрим:</b> Онлайн ({', '.join(platform_names)})"
     
     def _format_streaming_status_short(self, is_streaming: bool, platforms: List[Dict]) -> str:
         if is_streaming:
@@ -364,7 +338,7 @@ class NassalMonitor:
                     parts.append(f"-{game_penalty}")
                 reward_str = f" ({'/'.join(parts)})"
             if game_type == 'game':
-                return f" Категория: {game_title}{reward_str}"
+                return f"🎮 Категория: {game_title}{reward_str}"
             else:
                 return f"⚡ Категория: {game_title}{reward_str}"
         elif timer_started or (action_kind and action_kind != 'none'):
@@ -373,7 +347,7 @@ class NassalMonitor:
             else:
                 return "🎡 Категория: Крутит колесо"
         else:
-            return " Категория: Ожидание"
+            return "⚪ Категория: Ожидание"
     
     async def get_detailed_streamer_info(self, streamer_name: str) -> Optional[str]:
         try:
@@ -385,7 +359,7 @@ class NassalMonitor:
                 return None
             info = data[streamer_name]
             real_position = self._get_real_position(data, streamer_name)
-            message = f" <b>{streamer_name}</b>\n"
+            message = f"👤 <b>{streamer_name}</b>\n"
             message += f"🏆 <b>Место в топе:</b> {real_position} из {len(data)}\n"
             message += f"⭐ <b>Очки:</b> {info['points']}\n"
             is_streaming = info.get('is_streaming', False)
@@ -395,10 +369,7 @@ class NassalMonitor:
             game_type = info.get('game_type', '')
             action_kind = info.get('action_kind', '')
             timer_started = info.get('timer_started', '')
-            # Получаем HLTB и время в игре
-            hltb_info = info.get('hltb_info', '')
-            hltb_seconds = info.get('hltb_seconds', 0)
-            played_time = info.get('played_time', 0)
+            
             if game_title:
                 game_reward = info.get('game_reward', 0)
                 game_penalty = info.get('game_penalty', 0)
@@ -406,14 +377,19 @@ class NassalMonitor:
                     message += f"\n🎮 <b>Игра:</b> {game_title}"
                 else:
                     message += f"\n⚡ <b>Действие:</b> {game_title}"
-                # HLTB
-                if hltb_info or hltb_seconds > 0:
-                    hltb_formatted = self._parse_hltb_time(hltb_info) if hltb_info else self._format_time_duration(hltb_seconds)
-                    message += f"\n⏱️ <b>HLTB:</b> {hltb_formatted}"
-                # Время в игре
-                if played_time > 0:
-                    played_formatted = self._format_time_duration(played_time)
-                    message += f"\n⏳ <b>Время в игре:</b> {played_formatted}"
+                
+                # ⏳ Время в игре (рассчитывается от timerStartedAt)
+                if timer_started:
+                    try:
+                        from datetime import datetime
+                        start_dt = datetime.fromisoformat(timer_started.replace('Z', '+00:00'))
+                        now = datetime.now(start_dt.tzinfo) if start_dt.tzinfo else datetime.now()
+                        elapsed = int((now - start_dt).total_seconds())
+                        if elapsed > 0:
+                            message += f"\n⏳ <b>Время в игре:</b> {self._format_time_duration(elapsed)}"
+                    except Exception as e:
+                        logger.debug(f"Ошибка расчета времени для {streamer_name}: {e}")
+                
                 if game_reward:
                     message += f"\n💰 Награда: +{game_reward}"
                 if game_penalty:
@@ -487,14 +463,12 @@ class NassalMonitor:
                         action = required.get('kind', '')
                         auction = item.get('currentAuctionResult') or {}
                         timer = auction.get('timerStartedAt', '')
-                        hltb = auction.get('hltb', '')
-                        played = auction.get('playedTime', 0)
+                        # Выводим все ключи для отладки
                         text += f"<b>{idx+1}. {name}</b>\n"
+                        text += f"   Ключи: {list(auction.keys())}\n"
                         text += f"   Стрим: {'онлайн' if online_platforms else 'оффлайн'}\n"
                         text += f"   Action: {action or '-'}\n"
                         text += f"   Timer: {timer or '-'}\n"
-                        text += f"   HLTB: {hltb or '-'}\n"
-                        text += f"   Played: {played} сек\n"
                         text += f"   Игра: {auction.get('title', '-')}\n\n"
                     if len(text) > 4000:
                         parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
@@ -541,7 +515,7 @@ class NassalMonitor:
                     chat_id = int(args[0])
                     thread_id = None
                 except:
-                    await message.answer(" Неверный ID")
+                    await message.answer("❌ Неверный ID")
                     return
             elif len(args) == 2:
                 try:
@@ -562,7 +536,7 @@ class NassalMonitor:
                 self.save_groups()
                 await message.answer(f"✅ Удалена: {chat_id}" + (f" (ветка {thread_id})" if thread_id else ""))
             else:
-                await message.answer(" Такая группа не найдена в списке")
+                await message.answer("❌ Такая группа не найдена в списке")
         
         @self.dp.message(Command("clear_groups"))
         async def cmd_clear_groups(message: types.Message):
@@ -572,7 +546,7 @@ class NassalMonitor:
             count = len(self.monitoring_groups)
             self.monitoring_groups = []
             self.save_groups()
-            await message.answer(f"🗑️ Очищено! Удалено групп: {count}")
+            await message.answer(f"️ Очищено! Удалено групп: {count}")
         
         @self.dp.message(Command("list_groups"))
         async def cmd_list_groups(message: types.Message):
@@ -582,7 +556,7 @@ class NassalMonitor:
             if not self.monitoring_groups:
                 await message.answer("📋 Пусто")
                 return
-            text = "📋 <b>Группы:</b>\n\n"
+            text = " <b>Группы:</b>\n\n"
             for i, group in enumerate(self.monitoring_groups, 1):
                 thread_info = f" (ветка #{group['thread_id']})" if group.get('thread_id') else ""
                 text += f"{i}. <b>{group['chat_title']}</b>{thread_info}\n"
@@ -591,7 +565,7 @@ class NassalMonitor:
         @self.dp.message(Command("test_notify"))
         async def cmd_test_notify(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer(" Только админ")
+                await message.answer("❌ Только админ")
                 return
             await self.send_notification("🔔 <b>Тест</b>\n\n✅ Работает!")
             await message.answer("✅ Отправлено")
@@ -603,7 +577,7 @@ class NassalMonitor:
                 return
             chat_id = message.chat.id
             thread_id = message.message_thread_id
-            text = f" Chat ID: <code>{chat_id}</code>\n"
+            text = f"🆔 Chat ID: <code>{chat_id}</code>\n"
             if thread_id:
                 text += f"📌 Thread ID: <code>{thread_id}</code>"
             await message.answer(text, parse_mode="HTML")
@@ -633,14 +607,14 @@ class NassalMonitor:
                 )
             status_text = f"\n📡 <b>Мониторинг:</b> {'🟢 активен' if self.monitoring_active else '🔴 неактивен'}"
             await message.answer(
-                "🤖 <b>Бот Nassal.pro</b>\n\n"
+                " <b>Бот Nassal.pro</b>\n\n"
                 "📋 <b>Команды:</b>\n\n"
                 "/status 📊 статус всех стримеров\n"
-                "/rating  рейтинг\n"
+                "/rating 🏆 рейтинг\n"
                 "/points 📊 таблица\n"
                 "/streamer [номер/имя] 👤 инфо\n"
                 "/list 📝 список\n"
-                "/monitor  мониторинг"
+                "/monitor 🔔 мониторинг"
                 + status_text
                 + admin_text,
                 reply_markup=self.get_streamer_keyboard()
@@ -654,7 +628,7 @@ class NassalMonitor:
                 await message.answer("❌ Не удалось получить данные")
                 return
             leaderboard = self._get_leaderboard(data)
-            text = "📊 <b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n"
+            text = " <b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n"
             text += "━━━━━━━━━━━━━━━━━━━━\n\n"
             for name, info in leaderboard:
                 real_position = self._get_real_position(data, name)
@@ -669,14 +643,14 @@ class NassalMonitor:
                 streaming_platforms = info.get('streaming_platforms', [])
                 stream_icon = self._format_streaming_status_short(is_streaming, streaming_platforms)
                 activity = self._format_activity_short(info)
-                text += f"👤 <b>{name}</b> {stream_icon}\n"
-                text += f"🏆 {real_position} место |  Очки: {points_str}\n"
+                text += f" <b>{name}</b> {stream_icon}\n"
+                text += f" {real_position} место | ⭐ Очки: {points_str}\n"
                 text += f"{activity}\n\n"
             text += "━━━━━━━━━━━━━━━━━━━━\n"
             text += "🟢 — онлайн | 🔴 — оффлайн"
             if len(text) > 4000:
                 header = "📊 <b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-                footer = "\n━━━━━━━━━━━━━━━━━━━━\n — онлайн | 🔴 — оффлайн"
+                footer = "\n━━━━━━━━━━━━━━━━━━━━\n🟢 — онлайн | 🔴 — оффлайн"
                 parts = []
                 current_part = header
                 current_len = len(header)
@@ -693,7 +667,7 @@ class NassalMonitor:
                     streaming_platforms = info.get('streaming_platforms', [])
                     stream_icon = self._format_streaming_status_short(is_streaming, streaming_platforms)
                     activity = self._format_activity_short(info)
-                    block = f"👤 <b>{name}</b> {stream_icon}\n {real_position} место | ⭐ Очки: {points_str}\n{activity}\n\n"
+                    block = f"👤 <b>{name}</b> {stream_icon}\n🏆 {real_position} место | ⭐ Очки: {points_str}\n{activity}\n\n"
                     if current_len + len(block) + len(footer) > 4000:
                         current_part += footer
                         parts.append(current_part)
@@ -738,7 +712,7 @@ class NassalMonitor:
                 else:
                     points_str = "0"
                 is_streaming = info.get('is_streaming', False)
-                stream_emoji = "🟢" if is_streaming else "🔴"
+                stream_emoji = "🟢" if is_streaming else ""
                 base = f"{medal} {name} {points_str}"
                 visible = self._visible_len(base)
                 if visible < MAX_WIDTH:
@@ -758,7 +732,7 @@ class NassalMonitor:
                 await message.answer("❌ Не удалось")
                 return
             leaderboard = self._get_leaderboard(data)
-            text = "📊 <b>ОЧКИ</b>\n━━━━━━━━━━━━\n\n"
+            text = " <b>ОЧКИ</b>\n━━━━━━━━━━━━\n\n"
             for i, (name, info) in enumerate(leaderboard, 1):
                 points = info['points']
                 if points > 0:
@@ -773,7 +747,7 @@ class NassalMonitor:
         @self.dp.message(Command("streamer"))
         async def cmd_streamer(message: types.Message):
             if len(message.text.split()) < 2:
-                await message.answer("❌ Пример: /streamer 1")
+                await message.answer(" Пример: /streamer 1")
                 return
             query = message.text.split(maxsplit=1)[1].strip()
             streamer_name = None
@@ -792,7 +766,7 @@ class NassalMonitor:
             if not streamer_name:
                 await message.answer(f"❌ '{query}' не найден")
                 return
-            await message.answer(f"⏳ Загрузка...", parse_mode="HTML")
+            await message.answer(f" Загрузка...", parse_mode="HTML")
             info = await self.get_detailed_streamer_info(streamer_name)
             if info:
                 await message.answer(info, parse_mode="HTML")
@@ -866,19 +840,19 @@ class NassalMonitor:
                     return
         logger.info("🚀 Бот запущен!")
         if self.monitoring_groups:
-            logger.info("🔄 Запускаю мониторинг...")
+            logger.info(" Запускаю мониторинг...")
             self.start_monitoring()
         await self.dp.start_polling(self.bot)
     
     async def monitor_loop(self):
         if self.monitoring_active:
-            logger.warning("️ Мониторинг уже активен!")
+            logger.warning("⚠️ Мониторинг уже активен!")
             return
         logger.info("🔄 Запуск monitor_loop...")
         self.monitoring_active = True
         initial_data = await self.get_participants_data()
         if not initial_data:
-            logger.error(" Не удалось получить данные")
+            logger.error("❌ Не удалось получить данные")
             self.monitoring_active = False
             return
         self.previous_data = initial_data
@@ -899,7 +873,7 @@ class NassalMonitor:
                         logger.info(f"📤 Отправлено уведомление")
                 self.previous_data = current_data
             except Exception as e:
-                logger.error(f" Ошибка: {e}")
+                logger.error(f"❌ Ошибка: {e}")
             await asyncio.sleep(10)
         logger.info("⏹️ Мониторинг остановлен")
     
@@ -931,8 +905,8 @@ class NassalMonitor:
                         word_num = self._number_to_word(diff)
                         pos_word = self._get_position_word(diff)
                         position_changes.append(
-                            f" <b>{name}</b>: было {old_pos} место 🟢 стало {new_pos} место\n"
-                            f"   ↗️ поднялся на {word_num} {pos_word}"
+                            f"🚀 <b>{name}</b>: было {old_pos} место 🟢 стало {new_pos} место\n"
+                            f"   ️ поднялся на {word_num} {pos_word}"
                         )
                     else:
                         abs_diff = abs(diff)
@@ -955,7 +929,7 @@ class NassalMonitor:
                         emoji = "💚"
                         sign = "+"
                     else:
-                        emoji = "💔"
+                        emoji = ""
                         sign = ""
                     points_changes.append(
                         f"{emoji} <b>{name}</b>: {old_points} → {new_points} ({sign}{diff})"
@@ -967,28 +941,21 @@ class NassalMonitor:
             if name in old_data:
                 old_game = old_data[name].get('game_title', '')
                 new_game = data.get('game_title', '')
-                hltb_info = data.get('hltb_info', '')
-                hltb_seconds = data.get('hltb_seconds', 0)
                 if old_game != new_game:
                     if not old_game and new_game:
-                        hltb_formatted = self._parse_hltb_time(hltb_info) if hltb_info else self._format_time_duration(hltb_seconds)
                         game_changes.append(
-                            f"🎮 <b>{name}</b> начал играть: <b>{new_game}</b>\n"
-                            f"️ <b>HLTB:</b> {hltb_formatted}" if hltb_formatted else ""
+                            f"🎮 <b>{name}</b> начал играть: <b>{new_game}</b>"
                         )
                     elif old_game and not new_game:
                         game_changes.append(
-                            f"️ <b>{name}</b> закончил: <b>{old_game}</b>"
+                            f"⏹️ <b>{name}</b> закончил: <b>{old_game}</b>"
                         )
                     elif old_game and new_game:
-                        hltb_formatted = self._parse_hltb_time(hltb_info) if hltb_info else self._format_time_duration(hltb_seconds)
                         game_changes.append(
-                            f"🔄 <b>{name}</b> сменил игру:\n"
-                            f"{old_game} → {new_game}\n"
-                            f"⏱️ <b>HLTB:</b> {hltb_formatted}" if hltb_formatted else ""
+                            f"🔄 <b>{name}</b> сменил игру:\n{old_game} → {new_game}"
                         )
         if game_changes:
-            changes.append("🎮 <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_changes))
+            changes.append(" <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_changes))
         return changes
 
 async def main():
