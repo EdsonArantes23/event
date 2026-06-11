@@ -4,38 +4,32 @@ import os
 import json
 import re
 import aiohttp
+from datetime import datetime, timezone
 from typing import Dict, Optional, List
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 import logging
 
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 STREAMERS = {
-    1: "Dunduk",
-    2: "F1ashko",
-    3: "GladValakas",
-    4: "KarmikKoala",
-    5: "Lasqa",
-    6: "Maddyson",
-    7: "Melharucos",
-    8: "Nenormova",
-    9: "Praden",
-    10: "ViktorZu",
-    11: "C_a_k_e",
-    12: "Arrowwoods"
+    1: "Dunduk", 2: "F1ashko", 3: "GladValakas", 4: "KarmikKoala",
+    5: "Lasqa", 6: "Maddyson", 7: "Melharucos", 8: "Nenormova",
+    9: "Praden", 10: "ViktorZu", 11: "C_a_k_e", 12: "Arrowwoods"
 }
 
 STREAMERS_BY_NAME = {name.lower().strip(): num for num, name in STREAMERS.items()}
 VALID_NAMES = {name.lower().strip() for name in STREAMERS.values()}
 
 API_URL = "https://api-game.nassal.pro/api/public/player/list"
-
+ACHIEVEMENTS_URL = "https://api-game.nassal.pro/api/public/achievements"
 GROUPS_FILE = "monitoring_groups.json"
-
-ADMINS = [417850992]
+ADMINS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "417850992").split(",") if x.strip().isdigit()]
 
 NUMBERS_WORDS = {
     1: "одно", 2: "два", 3: "три", 4: "четыре", 5: "пять",
@@ -44,6 +38,43 @@ NUMBERS_WORDS = {
     15: "пятнадцать", 16: "шестнадцать", 17: "семнадцать", 18: "восемнадцать",
     19: "девятнадцать", 20: "двадцать"
 }
+
+
+def format_duration(seconds: int) -> str:
+    if seconds <= 0:
+        return "0м"
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h > 0:
+        return f"{h}ч {m}м {s}с"
+    elif m > 0:
+        return f"{m}м {s}с"
+    return f"{s}с"
+
+
+def format_duration_short(seconds: int) -> str:
+    if seconds <= 0:
+        return "0м"
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    if h > 0:
+        return f"{h}ч {m}м"
+    elif m > 0:
+        return f"{m}м"
+    return f"{seconds}с"
+
+
+def elapsed_since(iso_str: str) -> int:
+    if not iso_str:
+        return 0
+    try:
+        iso_str = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(iso_str)
+        return int((datetime.now(timezone.utc) - dt).total_seconds())
+    except Exception:
+        return 0
+
 
 class NassalMonitor:
     def __init__(self, bot_token: str):
@@ -55,29 +86,31 @@ class NassalMonitor:
         self.monitoring_active: bool = False
         self.player_cache: Dict[str, Dict] = {}
         self.monitor_loop_task: Optional[asyncio.Task] = None
-    
+        self.achievements_cache: Optional[Dict] = None
+        self.achievements_cache_time: float = 0
+        self.api_cache: Optional[Dict] = None
+        self.api_cache_time: float = 0
+        self.API_CACHE_TTL = 15
+
     def load_groups(self) -> List[Dict]:
         try:
             if os.path.exists(GROUPS_FILE):
                 with open(GROUPS_FILE, 'r', encoding='utf-8') as f:
-                    groups = json.load(f)
-                logger.info(f"📂 Загружено групп: {len(groups)}")
-                return groups
+                    return json.load(f)
         except Exception as e:
-            logger.error(f"Ошибка загрузки групп: {e}")
+            logger.error(f"Error loading groups: {e}")
         return []
-    
+
     def save_groups(self):
         try:
             with open(GROUPS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.monitoring_groups, f, ensure_ascii=False, indent=2)
-            logger.info(f"💾 Сохранено групп: {len(self.monitoring_groups)}")
         except Exception as e:
-            logger.error(f"Ошибка сохранения групп: {e}")
-    
+            logger.error(f"Error saving groups: {e}")
+
     def is_admin(self, user_id: int) -> bool:
         return user_id in ADMINS
-    
+
     def get_streamer_keyboard(self) -> ReplyKeyboardMarkup:
         keyboard = []
         row = []
@@ -89,253 +122,296 @@ class NassalMonitor:
         if row:
             keyboard.append(row)
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
-    
+
     def _number_to_word(self, number: int) -> str:
         number = abs(number)
-        if number in NUMBERS_WORDS:
-            return NUMBERS_WORDS[number]
-        return str(number)
-    
+        return NUMBERS_WORDS.get(number, str(number))
+
     def _get_position_word(self, count: int) -> str:
         count = abs(count)
         if count % 10 == 1 and count % 100 != 11:
             return "место"
         elif count % 10 in [2, 3, 4] and count % 100 not in [12, 13, 14]:
             return "места"
-        else:
-            return "мест"
-    
+        return "мест"
+
     def _visible_len(self, text: str) -> int:
-        """Считает видимую длину строки без HTML-тегов и эмодзи"""
         clean = re.sub(r'<[^>]+>', '', text)
-        # Убираем эмодзи для точного подсчёта
         emoji_pattern = re.compile(
-            "["
-            "\U0001F600-\U0001F64F"
-            "\U0001F300-\U0001F5FF"
-            "\U0001F680-\U0001F6FF"
-            "\U0001F1E0-\U0001F1FF"
-            "\U00002702-\U000027B0"
-            "\U000024C2-\U0001F251"
-            "\U0001f926-\U0001f937"
-            "\U00010000-\U0010ffff"
-            "\u2640-\u2642"
-            "\u2600-\u2B55"
-            "\u200d"
-            "\u23cf"
-            "\u23e9"
-            "\u231a"
-            "\ufe0f"
-            "\u3030"
-            "]+", flags=re.UNICODE)
+            "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U000024C2-\U0001F251"
+            "\U0001f926-\U0001f937\U00010000-\U0010ffff\u2640-\u2642"
+            "\u2600-\u2B55\u200d\u23cf\u23e9\u231a\ufe0f\u3030]+", flags=re.UNICODE)
         clean = emoji_pattern.sub('', clean)
         return len(clean)
-    
+
+    def _parse_participant(self, item: dict) -> Optional[tuple]:
+        player = item.get('player')
+
+        if player is None:
+            auction_result = item.get('currentAuctionResult') or {}
+            player_id = auction_result.get('playerId', '')
+            if player_id and player_id in self.player_cache:
+                cached = self.player_cache[player_id]
+                name = cached['name']
+                points = cached['points']
+            else:
+                return None
+        else:
+            raw_name = player.get('name', '')
+            name = raw_name.strip() if raw_name else ''
+            if name.lower() not in VALID_NAMES:
+                return None
+            points = player.get('ggp', player.get('points', player.get('score', 0)))
+            player_id = player.get('id', '')
+            if player_id:
+                self.player_cache[player_id] = {'name': name, 'points': points, 'timestamp': time.time()}
+
+        auction_result = item.get('currentAuctionResult') or {}
+        required_action = item.get('requiredAction') or {}
+        action_kind = required_action.get('kind', '') if required_action else ''
+
+        stream_info = item.get('stream') or []
+        is_streaming = False
+        streaming_platforms = []
+        for stream in stream_info:
+            if stream.get('online', False):
+                is_streaming = True
+                streaming_platforms.append({
+                    'platform': stream.get('platform', 'unknown'),
+                    'username': stream.get('username', '')
+                })
+
+        social_links = item.get('socialLinks') or []
+        player_data = item.get('player') or {}
+        inventory_effects = item.get('inventoryEffects') or []
+        attached_effects = item.get('attachedEffects') or []
+        auction_result_stats = item.get('auctionResultStats') or {}
+        roll_impact_stats = item.get('rollImpactStats') or {}
+        roll_kind_stats = item.get('rollKindStats') or {}
+
+        ar = auction_result
+        pd = player_data
+
+        result = {
+            'points': points,
+            'selected': False,
+            'game_title': ar.get('title', '') if ar else '',
+            'game_type': ar.get('type', '') if ar else '',
+            'game_reward': ar.get('ggpReward', 0) if ar else 0,
+            'game_penalty': ar.get('ggpPenalty', 0) if ar else 0,
+            'action_kind': action_kind,
+            'timer_started': ar.get('timerStartedAt', '') if ar else '',
+            'is_streaming': is_streaming,
+            'streaming_platforms': streaming_platforms,
+            'timestamp': time.time(),
+            'hltb_seconds': ar.get('seconds', 0) if ar else 0,
+            'hltb_game_id': ar.get('hltbGameId') if ar else None,
+            'game_image': ar.get('imageUrl', '') if ar else '',
+            'release_year': ar.get('releaseYear') if ar else None,
+            'review_score': ar.get('reviewScore') if ar else None,
+            'steam_app_id': ar.get('steamAppId') if ar else None,
+            'fastest_time': ar.get('fastestFinalSpentSec') if ar else None,
+            'fastest_player': ar.get('fastestPlayerName', '') if ar else '',
+            'timer_accumulated': ar.get('timerAccumulatedSec', 0) if ar else 0,
+            'auction_status': ar.get('status', '') if ar else '',
+            'social_links': social_links,
+            'inventory_effects': inventory_effects,
+            'attached_effects': attached_effects,
+            'turn': pd.get('turn', 0),
+            'game_streak': pd.get('gameStreak', 0),
+            'platinum_chips': pd.get('platinumChips', 0),
+            'chips_spent_turn': pd.get('regularChipsSpentInTurn', 0),
+            'chips_spent_total': pd.get('regularChipsSpentTotal', 0),
+            'platinum_spent_total': pd.get('platinumChipsSpentTotal', 0),
+            'slot_streak': pd.get('slotStreak', 0),
+            'drop_count': pd.get('dropCount', 0),
+            'ggp_lost_total': pd.get('ggpLostTotal', 0),
+            'ggp_earned_total': pd.get('ggpEarnedTotal', 0),
+            'gnus_available': pd.get('gnusAvailable', 0),
+            'casino_phase': pd.get('casinoPhase'),
+            'player_status': pd.get('status', ''),
+            'player_achievements': pd.get('achievements') or [],
+            'dropped': auction_result_stats.get('dropped', 0),
+            'completed': auction_result_stats.get('completed', 0),
+            'rerolled': auction_result_stats.get('rerolled', 0),
+            'total_playtime': auction_result_stats.get('totalPlaytimeSec', 0),
+            'ggp_net_games': auction_result_stats.get('ggpNetFromGames', 0),
+            'roll_positive': roll_impact_stats.get('positive', 0),
+            'roll_negative': roll_impact_stats.get('negative', 0),
+            'roll_neutral': roll_impact_stats.get('neutral', 0),
+            'roll_total': roll_kind_stats.get('total', 0),
+            'roll_regular': roll_kind_stats.get('regular', 0),
+            'roll_platinum': roll_kind_stats.get('platinum', 0),
+            'avg_rolls_turn': roll_kind_stats.get('avgRollsPerTurn', 0),
+        }
+
+        return (name, result)
+
     async def get_participants_data(self) -> Dict:
+        now = time.time()
+        if self.api_cache and (now - self.api_cache_time) < self.API_CACHE_TTL:
+            return self.api_cache
+
         try:
-            logger.info("🌐 Запрашиваю данные с API...")
-            
             if not self.session:
                 self.session = aiohttp.ClientSession()
-            
+
             async with self.session.get(API_URL) as response:
                 if response.status != 200:
-                    logger.error(f"❌ Ошибка API: {response.status}")
-                    return {}
-                
+                    return self.api_cache or {}
+
                 data = await response.json()
                 participants = {}
                 raw_array = data.get('data', {}).get('array', [])
-                
-                logger.info(f"📊 API вернул {len(raw_array)} участников")
-                
+
                 for idx, item in enumerate(raw_array):
                     try:
                         if item is None:
                             continue
-                        
-                        player = item.get('player')
-                        
-                        if player is None:
-                            auction_result = item.get('currentAuctionResult') or {}
-                            player_id = auction_result.get('playerId', '')
-                            
-                            if player_id and player_id in self.player_cache:
-                                cached = self.player_cache[player_id]
-                                name = cached['name']
-                                points = cached['points']
-                                
-                                game_title = auction_result.get('title', '')
-                                game_type = auction_result.get('type', '')
-                                game_reward = auction_result.get('ggpReward', 0)
-                                game_penalty = auction_result.get('ggpPenalty', 0)
-                                timer_started = auction_result.get('timerStartedAt', '')
-                                
-                                required_action = item.get('requiredAction') or {}
-                                action_kind = required_action.get('kind', '') if required_action else ''
-                                
-                                # ОРИГИНАЛЬНАЯ ЛОГИКА СТРИМА
-                                stream_info = item.get('stream') or []
-                                is_streaming = False
-                                streaming_platforms = []
-                                
-                                for stream in stream_info:
-                                    if stream.get('online', False):
-                                        is_streaming = True
-                                        platform = stream.get('platform', 'unknown')
-                                        username = stream.get('username', '')
-                                        streaming_platforms.append({
-                                            'platform': platform,
-                                            'username': username
-                                        })
-                                
-                                participants[name] = {
-                                    'points': points,
-                                    'selected': False,
-                                    'game_title': game_title,
-                                    'game_type': game_type,
-                                    'game_reward': game_reward,
-                                    'game_penalty': game_penalty,
-                                    'action_kind': action_kind,
-                                    'timer_started': timer_started,
-                                    'is_streaming': is_streaming,
-                                    'streaming_platforms': streaming_platforms,
-                                    'timestamp': time.time()
-                                }
-                            else:
-                                continue
-                        else:
-                            raw_name = player.get('name', '')
-                            name = raw_name.strip() if raw_name else ''
-                            name_lower = name.lower()
-                            
-                            if not name or name_lower not in VALID_NAMES:
-                                continue
-                            
-                            points = player.get('ggp', player.get('points', player.get('score', 0)))
-                            
-                            player_id = player.get('id', '')
-                            if player_id:
-                                self.player_cache[player_id] = {
-                                    'name': name,
-                                    'points': points,
-                                    'timestamp': time.time()
-                                }
-                            
-                            auction_result = item.get('currentAuctionResult') or {}
-                            game_title = auction_result.get('title', '') if auction_result else ''
-                            game_type = auction_result.get('type', '') if auction_result else ''
-                            game_reward = auction_result.get('ggpReward', 0) if auction_result else 0
-                            game_penalty = auction_result.get('ggpPenalty', 0) if auction_result else 0
-                            timer_started = auction_result.get('timerStartedAt', '') if auction_result else ''
-                            
-                            required_action = item.get('requiredAction') or {}
-                            action_kind = required_action.get('kind', '') if required_action else ''
-                            
-                            # ОРИГИНАЛЬНАЯ ЛОГИКА СТРИМА
-                            stream_info = item.get('stream') or []
-                            is_streaming = False
-                            streaming_platforms = []
-                            
-                            for stream in stream_info:
-                                if stream.get('online', False):
-                                    is_streaming = True
-                                    platform = stream.get('platform', 'unknown')
-                                    username = stream.get('username', '')
-                                    streaming_platforms.append({
-                                        'platform': platform,
-                                        'username': username
-                                    })
-                            
-                            participants[name] = {
-                                'points': points,
-                                'selected': False,
-                                'game_title': game_title,
-                                'game_type': game_type,
-                                'game_reward': game_reward,
-                                'game_penalty': game_penalty,
-                                'action_kind': action_kind,
-                                'timer_started': timer_started,
-                                'is_streaming': is_streaming,
-                                'streaming_platforms': streaming_platforms,
-                                'timestamp': time.time()
-                            }
-                        
+                        result = self._parse_participant(item)
+                        if result is None:
+                            continue
+                        name, info = result
+                        participants[name] = info
                     except Exception as e:
-                        logger.warning(f"⚠️ [{idx}] Ошибка парсинга: {e}")
+                        logger.warning(f"[{idx}] Parse error: {e}")
                         continue
-                
+
                 if participants:
                     active_name = None
                     latest_time = ""
-                    
                     for name, info in participants.items():
                         timer = info.get('timer_started', '')
                         if timer and timer > latest_time:
                             latest_time = timer
                             active_name = name
-                    
                     if not active_name:
                         for name, info in participants.items():
                             action = info.get('action_kind', '')
                             if action and action != 'none':
                                 active_name = name
                                 break
-                    
                     if active_name:
                         participants[active_name]['selected'] = True
-                
-                missing = [name for name in STREAMERS.values() if name not in participants]
-                if missing:
-                    logger.warning(f"⚠️ Отсутствуют: {missing}")
-                else:
-                    logger.info(f"✅ Все 12 стримеров на месте!")
-                
-                logger.info(f"✅ Обработано {len(participants)} участников")
+
+                self.api_cache = participants
+                self.api_cache_time = now
                 return participants
-                
+
         except Exception as e:
-            logger.error(f"❌ Ошибка при получении данных: {e}", exc_info=True)
-            return {}
-    
+            logger.error(f"Error getting data: {e}", exc_info=True)
+            return self.api_cache or {}
+
+    async def get_achievements_data(self) -> Dict:
+        now = time.time()
+        if self.achievements_cache and (now - self.achievements_cache_time) < 300:
+            return self.achievements_cache
+
+        try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            async with self.session.get(ACHIEVEMENTS_URL) as response:
+                if response.status != 200:
+                    return self.achievements_cache or {}
+                data = await response.json()
+                self.achievements_cache = data.get('data', {})
+                self.achievements_cache_time = now
+                return self.achievements_cache
+        except Exception as e:
+            logger.error(f"Error getting achievements: {e}")
+            return self.achievements_cache or {}
+
+    async def search_hltb(self, query: str) -> Optional[Dict]:
+        try:
+            from howlongtobeatpy import HowLongToBeat
+            hltb = HowLongToBeat()
+            results = await hltb.async_search(query)
+            if not results:
+                return None
+            best = max(results, key=lambda x: x.similarity)
+
+            extra = {}
+            try:
+                if not self.session:
+                    self.session = aiohttp.ClientSession()
+                async with self.session.get(best.game_web_link, timeout=aiohttp.ClientTimeout(total=15), headers={"User-Agent": "Mozilla/5.0"}) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        import re as re_mod
+                        dev = re_mod.findall(r'"profile_dev":"([^"]*)"', html)
+                        pub = re_mod.findall(r'"profile_pub":"([^"]*)"', html)
+                        genre = re_mod.findall(r'"profile_genre":"([^"]*)"', html)
+                        platforms = re_mod.findall(r'"profile_platform":"([^"]*)"', html)
+                        release = re_mod.findall(r'"release_world":(\d+)', html)
+                        na_date = re_mod.findall(r'"release_na":"([^"]*)"', html)
+                        eu_date = re_mod.findall(r'"release_eu":"([^"]*)"', html)
+                        jp_date = re_mod.findall(r'"release_jp":"([^"]*)"', html)
+                        if dev: extra["developer"] = dev[0]
+                        if pub: extra["publisher"] = pub[0]
+                        if genre: extra["genres"] = genre[0]
+                        if platforms: extra["platforms"] = platforms[0]
+                        if release: extra["release_year"] = release[0]
+                        if na_date: extra["release_na"] = na_date[0]
+                        if eu_date: extra["release_eu"] = eu_date[0]
+                        if jp_date: extra["release_jp"] = jp_date[0]
+            except Exception as e:
+                logger.warning(f"HLTB page scrape failed: {e}")
+
+            plat = extra.get("platforms", "")
+            if not plat and hasattr(best, 'profile_platforms') and best.profile_platforms:
+                plat = ", ".join(best.profile_platforms) if isinstance(best.profile_platforms, list) else str(best.profile_platforms)
+
+            rel = extra.get("release_year", "")
+            if not rel and hasattr(best, 'release_world') and best.release_world:
+                rel = str(best.release_world)
+
+            return {
+                "name": best.game_name,
+                "id": best.game_id,
+                "main_time": int(best.main_story * 3600) if best.main_story else 0,
+                "extra_time": int(best.main_extra * 3600) if best.main_extra else 0,
+                "hundred_time": int(best.completionist * 3600) if best.completionist else 0,
+                "url": best.game_web_link,
+                "platforms": plat,
+                "developer": extra.get("developer", ""),
+                "publisher": extra.get("publisher", ""),
+                "genres": extra.get("genres", ""),
+                "release_year": rel,
+                "release_na": extra.get("release_na", ""),
+                "release_eu": extra.get("release_eu", ""),
+                "release_jp": extra.get("release_jp", ""),
+            }
+        except ImportError:
+            logger.warning("howlongtobeatpy not installed. Run: pip install howlongtobeatpy")
+            return None
+        except Exception as e:
+            logger.error(f"HLTB search error: {e}")
+            return None
+
     def _get_leaderboard(self, data: Dict) -> list:
         return sorted(data.items(), key=lambda x: x[1]['points'], reverse=True)
-    
+
     def _get_real_position(self, data: Dict, streamer_name: str) -> int:
-        leaderboard = self._get_leaderboard(data)
-        for i, (name, _) in enumerate(leaderboard, 1):
+        for i, (name, _) in enumerate(self._get_leaderboard(data), 1):
             if name == streamer_name:
                 return i
         return 0
-    
+
     def _format_streaming_status(self, is_streaming: bool, platforms: List[Dict]) -> str:
         if not is_streaming or not platforms:
-            return "🔴 <b>Стрим:</b> Оффлайн"
-        
+            return "\U0001f534 <b>Стрим:</b> Оффлайн"
         platform_emojis = {
-            'twitch': '🟣 Twitch',
-            'youtube': '🔴 YouTube',
-            'kick': '🟢 Kick',
-            'telegram': '✈️ Telegram',
-            'vk': '🔵 VK',
-            'wtv': '📺 WTV',
-            'vklive': '🔵 VK Live'
+            'twitch': '\U0001f7e3 Twitch', 'youtube': '\U0001f534 YouTube',
+            'kick': '\U0001f7e2 Kick', 'telegram': '\u2708\ufe0f Telegram',
+            'vk': '\U0001f535 VK', 'wtv': '\U0001f4fa WTV', 'vklive': '\U0001f535 VK Live'
         }
-        
-        platform_names = []
-        for p in platforms:
-            platform = p.get('platform', '').lower()
-            emoji = platform_emojis.get(platform, platform.capitalize())
-            platform_names.append(emoji)
-        
-        return f"🟢 <b>Стрим:</b> Онлайн ({', '.join(platform_names)})"
-    
+        names = [platform_emojis.get(p.get('platform', '').lower(), p.get('platform', '').capitalize()) for p in platforms]
+        return f"\U0001f7e2 <b>Стрим:</b> Онлайн ({', '.join(names)})"
+
     def _format_streaming_status_short(self, is_streaming: bool, platforms: List[Dict]) -> str:
-        if is_streaming:
-            return "🟢"
-        else:
-            return "🔴"
-    
+        return "\U0001f7e2" if is_streaming else "\U0001f534"
+
     def _format_activity_short(self, info: Dict) -> str:
         game_title = info.get('game_title', '')
         game_type = info.get('game_type', '')
@@ -343,7 +419,7 @@ class NassalMonitor:
         timer_started = info.get('timer_started', '')
         game_reward = info.get('game_reward', 0)
         game_penalty = info.get('game_penalty', 0)
-        
+
         if game_title:
             reward_str = ""
             if game_reward or game_penalty:
@@ -353,764 +429,935 @@ class NassalMonitor:
                 if game_penalty:
                     parts.append(f"-{game_penalty}")
                 reward_str = f" ({'/'.join(parts)})"
-            
-            if game_type == 'game':
-                return f"🎮 Категория: {game_title}{reward_str}"
-            else:
-                return f"⚡ Категория: {game_title}{reward_str}"
+            prefix = "\U0001f3ae" if game_type == 'game' else "\u26a1"
+            return f"{prefix} Категория: {game_title}{reward_str}"
         elif timer_started or (action_kind and action_kind != 'none'):
             if action_kind == 'auction':
-                return "🎯 Категория: Аукцион"
-            else:
-                return "🎡 Категория: Крутит колесо"
-        else:
-            return "⚪ Категория: Ожидание"
-    
+                return "\U0001f3af Категория: Аукцион"
+            return "\U0001f3b1 Категория: Крутит колесо"
+        return "\u26aa Категория: Ожидание"
+
+    def _format_timer_line(self, info: Dict) -> str:
+        timer_started = info.get('timer_started', '')
+        if not timer_started:
+            return ""
+        accumulated = info.get('timer_accumulated', 0)
+        elapsed = accumulated + elapsed_since(timer_started)
+        hltb = info.get('hltb_seconds', 0)
+        timer_str = format_duration(elapsed)
+        if hltb > 0:
+            return f"\u23f1 <b>Играет:</b> {timer_str}\n\U0001f552 <b>HLTB:</b> {format_duration(hltb)}"
+        return f"\u23f1 <b>Играет:</b> {timer_str}"
+
+    def _resolve_streamer(self, query: str) -> Optional[str]:
+        if query.isdigit():
+            return STREAMERS.get(int(query))
+        q = query.lower().strip()
+        if q in STREAMERS_BY_NAME:
+            return STREAMERS[STREAMERS_BY_NAME[q]]
+        for name in STREAMERS.values():
+            if q in name.lower():
+                return name
+        return None
+
     async def get_detailed_streamer_info(self, streamer_name: str) -> Optional[str]:
         try:
             if streamer_name not in STREAMERS.values():
                 return None
-            
             data = await self.get_participants_data()
-            
             if streamer_name not in data:
-                logger.warning(f"⚠️ Стример '{streamer_name}' не найден")
                 return None
-            
+
             info = data[streamer_name]
             real_position = self._get_real_position(data, streamer_name)
-            
-            message = f"👤 <b>{streamer_name}</b>\n"
-            message += f"🏆 <b>Место в топе:</b> {real_position} из {len(data)}\n"
-            message += f"⭐ <b>Очки:</b> {info['points']}\n"
-            
-            is_streaming = info.get('is_streaming', False)
-            streaming_platforms = info.get('streaming_platforms', [])
-            message += f"{self._format_streaming_status(is_streaming, streaming_platforms)}\n"
-            
+            points = info['points']
+            points_str = f"+{points}" if points > 0 else str(points)
+
+            msg = f"\U0001f464 <b>{streamer_name}</b>\n"
+            msg += f"\U0001f3c6 <b>Место:</b> {real_position} из {len(data)}\n"
+            msg += f"\u2b50 <b>Очки:</b> {points_str}\n"
+            msg += f"{self._format_streaming_status(info.get('is_streaming', False), info.get('streaming_platforms', []))}\n"
+
             game_title = info.get('game_title', '')
             game_type = info.get('game_type', '')
             action_kind = info.get('action_kind', '')
             timer_started = info.get('timer_started', '')
-            
+            game_reward = info.get('game_reward', 0)
+            game_penalty = info.get('game_penalty', 0)
+
             if game_title:
-                game_reward = info.get('game_reward', 0)
-                game_penalty = info.get('game_penalty', 0)
-                
-                if game_type == 'game':
-                    message += f"\n🎮 <b>Игра:</b> {game_title}"
-                else:
-                    message += f"\n⚡ <b>Действие:</b> {game_title}"
-                
-                if game_reward:
-                    message += f"\n💰 Награда: +{game_reward}"
-                if game_penalty:
-                    message += f"\n💔 Штраф: -{game_penalty}"
-            
+                prefix = "\U0001f3ae <b>Игра:</b>" if game_type == 'game' else "\u26a1 <b>Действие:</b>"
+                year = info.get('release_year')
+                msg += f"\n{prefix} {game_title}"
+                if year:
+                    msg += f" ({year})"
+                msg += "\n"
+
+                review = info.get('review_score')
+                if review is not None:
+                    emoji = "\U0001f44d" if review >= 75 else ("\U0001f914" if review >= 50 else "\U0001f44e")
+                    msg += f"  {emoji} Оценка: {review}/100\n"
+
+                hltb = info.get('hltb_seconds', 0)
+                hltb_id = info.get('hltb_game_id')
+
+                hltb_data = None
+                try:
+                    hltb_data = await self.search_hltb(game_title)
+                except Exception:
+                    pass
+
+                if hltb_data:
+                    dev = hltb_data.get("developer", "")
+                    pub = hltb_data.get("publisher", "")
+                    genres = hltb_data.get("genres", "")
+                    platforms = hltb_data.get("platforms", "")
+                    if dev:
+                        msg += f"  \U0001f3d7 Разработчик: {dev}\n"
+                    if pub:
+                        msg += f"  \U0001f4e2 Издатель: {pub}\n"
+                    if genres:
+                        msg += f"  \U0001f3a8 Жанры: {genres}\n"
+                    if platforms:
+                        msg += f"  \u2328 Платформы: {platforms}\n"
+                elif hltb_id and hltb > 0:
+                    pass
+
+                if hltb_id and hltb > 0:
+                    msg += f"  \U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_id}'>{format_duration(hltb)}</a>\n"
+                elif hltb_data and hltb_data.get("main_time", 0) > 0:
+                    msg += f"  \U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_data.get('id', '')}'>{format_duration(hltb_data['main_time'])}</a>\n"
+
+                steam_id = info.get('steam_app_id')
+                if steam_id:
+                    msg += f"  \u2699\ufe0f Steam: <a href='https://store.steampowered.com/app/{steam_id}'>открыть</a>\n"
+
+                ft = info.get('fastest_time')
+                fp = info.get('fastest_player')
+                if ft and fp:
+                    msg += f"  \u26a1 Рекорд: {format_duration(ft)} ({fp})\n"
+
+                ts = info.get('timer_started', '')
+                acc = info.get('timer_accumulated', 0)
+                if ts:
+                    el = acc + elapsed_since(ts)
+                    msg += f"\n\u23f1 <b>Текущее время:</b> {format_duration(el)}\n"
+                    if hltb > 0:
+                        msg += f"\U0001f552 <b>HLTB:</b> {format_duration(hltb)}\n"
+                elif acc > 0:
+                    msg += f"\n\u23f1 <b>На паузе:</b> {format_duration(acc)}\n"
+                    if hltb > 0:
+                        msg += f"\U0001f552 <b>HLTB:</b> {format_duration(hltb)}\n"
+
+                if game_reward or game_penalty:
+                    msg += f"\n\U0001f4b0 <b>Награда:</b> +{game_reward}\n"
+                    msg += f"\U0001f494 <b>Штраф:</b> -{game_penalty}\n"
+
             elif timer_started or (action_kind and action_kind != 'none'):
-                if action_kind == 'auction':
-                    message += f"\n🎯 <b>Действие:</b> Аукцион"
-                else:
-                    message += f"\n🎡 <b>Действие:</b> Крутит колесо"
-            
+                msg += f"\n\U0001f3af <b>Действие:</b> {'Аукцион' if action_kind == 'auction' else 'Крутит колесо'}\n"
             else:
-                message += f"\n⚪ <b>Статус:</b> Не активен"
-            
-            return message
-            
+                msg += f"\n\u26aa <b>Статус:</b> Не активен\n"
+
+            turn = info.get('turn', 0)
+            streak = info.get('game_streak', 0)
+            drops = info.get('drop_count', 0)
+            completed = info.get('completed', 0)
+            total_playtime = info.get('total_playtime', 0)
+            earned = info.get('ggp_earned_total', 0)
+            lost = info.get('ggp_lost_total', 0)
+
+            if turn > 0 or streak > 0 or completed > 0:
+                msg += f"\n\U0001f4ca <b>Статистика:</b>\n"
+                msg += f"  \U0001f3b2 Ход: {turn}\n"
+                msg += f"  \U0001f525 Серия без дропов: {streak}\n"
+                msg += f"  \u2705 Пройдено: {completed} | \u274c Дропов: {drops}\n"
+                if total_playtime > 0:
+                    msg += f"  \U0001f553 Общее время: {format_duration(total_playtime)}\n"
+                msg += f"  \U0001f4b5 Заработано: {earned} | Потеряно: {lost}\n"
+
+            chips = info.get('platinum_chips', 0)
+            chips_spent = info.get('chips_spent_total', 0)
+            if chips > 0 or chips_spent > 0:
+                msg += f"\n\U0001f3b4 Фишки: {chips} плат. | {chips_spent} обыч.\n"
+
+            inventory = info.get('inventory_effects', [])
+            attached = info.get('attached_effects', [])
+            if inventory or attached:
+                msg += f"\n\U0001f392 <b>Инвентарь:</b>\n"
+                for e in inventory:
+                    name = e.get('displayName', e.get('name', '?'))
+                    impact = e.get('impact', '')
+                    emoji = "\U0001f48e" if impact == 'positive' else ("\U0001f4a5" if impact == 'negative' else "\u26aa")
+                    msg += f"  {emoji} {name}\n"
+                if attached:
+                    msg += f"  \U0001f6e1 Активные: {', '.join(e.get('displayName', e.get('name', '?')) for e in attached)}\n"
+
+            p_ach = info.get('player_achievements', [])
+            if p_ach:
+                msg += f"\n\U0001f3c5 <b>Достижения ({len(p_ach)}):</b>\n"
+                for ach in p_ach[:5]:
+                    msg += f"  \U0001f31f {ach.get('title', '?')}\n"
+                if len(p_ach) > 5:
+                    msg += f"  ... и ещё {len(p_ach) - 5}\n"
+
+            social = info.get('social_links', [])
+            if social:
+                msg += f"\n\U0001f517 <b>Ссылки:</b>\n"
+                for link in social:
+                    msg += f"  {link.get('platform', '')}: {link.get('url', '')}\n"
+
+            return msg
         except Exception as e:
-            logger.error(f"❌ Ошибка: {e}", exc_info=True)
+            logger.error(f"Error: {e}", exc_info=True)
             return None
-    
+
     async def send_notification(self, message: str):
         if not self.monitoring_groups:
-            logger.warning("⚠️ Нет групп для отправки")
             return
-        
-        success_count = 0
+        success = 0
         for group in self.monitoring_groups:
             try:
-                chat_id = group['chat_id']
-                thread_id = group.get('thread_id')
-                
                 await self.bot.send_message(
-                    chat_id=chat_id,
-                    text=message,
-                    parse_mode="HTML",
-                    message_thread_id=thread_id
+                    chat_id=group['chat_id'], text=message, parse_mode="HTML",
+                    message_thread_id=group.get('thread_id')
                 )
-                success_count += 1
+                success += 1
             except Exception as e:
-                logger.error(f"❌ Ошибка отправки: {e}")
-        
-        logger.info(f"✅ Отправлено в {success_count} групп")
-    
+                logger.error(f"Send error: {e}")
+        logger.info(f"Sent to {success} groups")
+
     def start_monitoring(self):
-        if self.monitoring_active:
-            logger.warning("⚠️ Мониторинг уже активен, не запускаю второй цикл!")
+        if self.monitoring_active or (self.monitor_loop_task and not self.monitor_loop_task.done()):
             return
-        
-        if self.monitor_loop_task is not None and not self.monitor_loop_task.done():
-            logger.warning("⚠️ Цикл мониторинга уже работает!")
-            return
-        
         self.monitor_loop_task = asyncio.create_task(self.monitor_loop())
-        logger.info("🚀 Запущен новый цикл мониторинга")
-    
+
     async def start(self):
         @self.dp.message(Command("debug"))
         async def cmd_debug(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
-                return
-            
-            await message.answer("🔍 Получаю данные...")
-            
+                return await message.answer("Только админ")
+            await message.answer("Получаю данные...")
             if not self.session:
                 self.session = aiohttp.ClientSession()
-            
             try:
                 async with self.session.get(API_URL) as response:
                     data = await response.json()
-                    
-                    text = f"📊 <b>Данные API:</b>\n\n"
-                    
+                    text = "<b>Данные API:</b>\n\n"
                     for idx, item in enumerate(data.get('data', {}).get('array', [])):
                         if item is None:
                             continue
-                        
                         player = item.get('player')
                         name = player.get('name', '???') if player else '???'
-                        
-                        stream_info = item.get('stream') or []
-                        online_platforms = []
-                        for s in stream_info:
-                            if s.get('online', False):
-                                online_platforms.append(s.get('platform', 'unknown'))
-                        
-                        required = item.get('requiredAction') or {}
-                        action = required.get('kind', '')
                         auction = item.get('currentAuctionResult') or {}
-                        timer = auction.get('timerStartedAt', '')
-                        
                         text += f"<b>{idx+1}. {name}</b>\n"
-                        text += f"   Стрим: {'онлайн' if online_platforms else 'оффлайн'}\n"
-                        text += f"   Action: {action or '-'}\n"
-                        text += f"   Timer: {timer or '-'}\n"
-                        text += f"   Игра: {auction.get('title', '-')}\n\n"
-                    
-                    if len(text) > 4000:
-                        parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
-                        for part in parts:
-                            await message.answer(part, parse_mode="HTML")
-                    else:
-                        await message.answer(text, parse_mode="HTML")
-                        
+                        text += f"   Игра: {auction.get('title', '-')}\n"
+                        text += f"   HLTB: {format_duration(auction.get('seconds', 0)) or '-'}\n\n"
+                    for i in range(0, len(text), 4000):
+                        await message.answer(text[i:i+4000], parse_mode="HTML")
             except Exception as e:
-                await message.answer(f"❌ Ошибка: {e}")
-        
+                await message.answer(f"Ошибка: {e}")
+
         @self.dp.message(Command("add_group"))
         async def cmd_add_group(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
-                return
-            
-            chat_id = message.chat.id
-            thread_id = message.message_thread_id
-            
-            for group in self.monitoring_groups:
-                if group['chat_id'] == chat_id and group.get('thread_id') == thread_id:
-                    await message.answer("✅ Уже добавлена")
-                    return
-            
-            group_info = {
-                'chat_id': chat_id,
-                'chat_title': message.chat.title or 'Unknown',
-                'thread_id': thread_id,
-                'added_at': time.time()
-            }
-            
-            self.monitoring_groups.append(group_info)
+                return await message.answer("Только админ")
+            chat_id, thread_id = message.chat.id, message.message_thread_id
+            for g in self.monitoring_groups:
+                if g['chat_id'] == chat_id and g.get('thread_id') == thread_id:
+                    return await message.answer("Уже добавлена")
+            self.monitoring_groups.append({
+                'chat_id': chat_id, 'chat_title': message.chat.title or 'Unknown',
+                'thread_id': thread_id, 'added_at': time.time()
+            })
             self.save_groups()
-            
-            await message.answer(f"✅ Добавлена\n👥 {message.chat.title}\n🆔 {chat_id}")
-            
+            await message.answer(f"Добавлена: {message.chat.title}")
             self.start_monitoring()
-        
+
         @self.dp.message(Command("remove_group"))
         async def cmd_remove_group(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
-                return
-            
+                return await message.answer("Только админ")
             args = message.text.split()[1:] if len(message.text.split()) > 1 else []
-            
             if len(args) == 0:
-                chat_id = message.chat.id
-                thread_id = message.message_thread_id
+                chat_id, thread_id = message.chat.id, message.message_thread_id
             elif len(args) == 1:
                 try:
-                    chat_id = int(args[0])
-                    thread_id = None
+                    chat_id, thread_id = int(args[0]), None
                 except:
-                    await message.answer("❌ Неверный ID")
-                    return
+                    return await message.answer("Неверный ID")
             elif len(args) == 2:
                 try:
-                    chat_id = int(args[0])
-                    thread_id = int(args[1])
+                    chat_id, thread_id = int(args[0]), int(args[1])
                 except:
-                    await message.answer("❌ Неверные ID")
-                    return
+                    return await message.answer("Неверные ID")
             else:
-                await message.answer("❌ Неверный формат")
-                return
-            
+                return await message.answer("Неверный формат")
             old_len = len(self.monitoring_groups)
-            self.monitoring_groups = [
-                g for g in self.monitoring_groups 
-                if not (g['chat_id'] == chat_id and g.get('thread_id') == thread_id)
-            ]
-            
+            self.monitoring_groups = [g for g in self.monitoring_groups if not (g['chat_id'] == chat_id and g.get('thread_id') == thread_id)]
             if len(self.monitoring_groups) < old_len:
                 self.save_groups()
-                await message.answer(f"✅ Удалена: {chat_id}" + (f" (ветка {thread_id})" if thread_id else ""))
+                await message.answer(f"Удалена: {chat_id}")
             else:
-                await message.answer("❌ Такая группа не найдена в списке")
-        
+                await message.answer("Группа не найдена")
+
         @self.dp.message(Command("clear_groups"))
         async def cmd_clear_groups(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
-                return
-            
+                return await message.answer("Только админ")
             count = len(self.monitoring_groups)
             self.monitoring_groups = []
             self.save_groups()
-            
-            await message.answer(f"🗑️ Очищено! Удалено групп: {count}")
-        
+            await message.answer(f"Очищено: {count} групп")
+
         @self.dp.message(Command("list_groups"))
         async def cmd_list_groups(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
-                return
-            
+                return await message.answer("Только админ")
             if not self.monitoring_groups:
-                await message.answer("📋 Пусто")
-                return
-            
-            text = "📋 <b>Группы:</b>\n\n"
-            for i, group in enumerate(self.monitoring_groups, 1):
-                thread_info = f" (ветка #{group['thread_id']})" if group.get('thread_id') else ""
-                text += f"{i}. <b>{group['chat_title']}</b>{thread_info}\n"
-            
+                return await message.answer("Пусто")
+            text = "<b>Группы:</b>\n\n"
+            for i, g in enumerate(self.monitoring_groups, 1):
+                t = f" (ветка #{g['thread_id']})" if g.get('thread_id') else ""
+                text += f"{i}. <b>{g['chat_title']}</b>{t}\n"
             await message.answer(text, parse_mode="HTML")
-        
+
         @self.dp.message(Command("test_notify"))
         async def cmd_test_notify(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
-                return
-            
-            await self.send_notification("🔔 <b>Тест</b>\n\n✅ Работает!")
-            await message.answer("✅ Отправлено")
-        
+                return await message.answer("Только админ")
+            await self.send_notification("<b>Тест</b>\n\nРаботает!")
+            await message.answer("Отправлено")
+
         @self.dp.message(Command("my_id"))
         async def cmd_my_id(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
-                return
-            
-            chat_id = message.chat.id
-            thread_id = message.message_thread_id
-            
-            text = f"🆔 Chat ID: <code>{chat_id}</code>\n"
-            if thread_id:
-                text += f"📌 Thread ID: <code>{thread_id}</code>"
-            
+                return await message.answer("Только админ")
+            text = f"Chat ID: <code>{message.chat.id}</code>"
+            if message.message_thread_id:
+                text += f"\nThread ID: <code>{message.message_thread_id}</code>"
             await message.answer(text, parse_mode="HTML")
-        
+
         @self.dp.message(Command("restart_monitor"))
         async def cmd_restart_monitor(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
-                return
-            
+                return await message.answer("Только админ")
             self.monitoring_active = False
             if self.monitor_loop_task and not self.monitor_loop_task.done():
                 self.monitor_loop_task.cancel()
                 await asyncio.sleep(1)
-            
             self.previous_data = {}
+            self.api_cache = None
             self.monitor_loop_task = asyncio.create_task(self.monitor_loop())
-            
-            await message.answer("🔄 Мониторинг перезапущен!")
-        
+            await message.answer("Мониторинг перезапущен!")
+
         @self.dp.message(Command("start"))
         async def cmd_start(message: types.Message):
             admin_text = ""
             if self.is_admin(message.from_user.id):
-                admin_text = (
-                    "\n🔐 <b>Админ:</b>\n"
-                    "/add_group, /remove_group, /clear_groups, /list_groups\n"
-                    "/test_notify, /my_id, /debug\n"
-                    "/restart_monitor - перезапустить мониторинг"
-                )
-            
-            status_text = f"\n📡 <b>Мониторинг:</b> {'🟢 активен' if self.monitoring_active else '🔴 неактивен'}"
-            
+                admin_text = "\n<b>Админ:</b>\n/add_group, /remove_group, /clear_groups, /list_groups\n/test_notify, /my_id, /debug\n/restart_monitor"
+            status = 'активен' if self.monitoring_active else 'неактивен'
             await message.answer(
-                "🤖 <b>Бот Nassal.pro</b>\n\n"
-                "📋 <b>Команды:</b>\n\n"
-                "/status 📊 статус всех стримеров\n"
-                "/rating 🏆 рейтинг\n"
-                "/points 📊 таблица\n"
-                "/streamer [номер/имя] 👤 инфо\n"
-                "/list 📝 список\n"
-                "/monitor 🔔 мониторинг"
-                + status_text
+                "<b>Бот Nassal.pro</b>\n\n"
+                "Напиши /help_event чтобы увидеть все команды"
+                f"\n\n<b>Мониторинг:</b> {status}"
                 + admin_text,
                 reply_markup=self.get_streamer_keyboard()
             )
-        
+
+        @self.dp.message(Command("help_event"))
+        async def cmd_help_event(message: types.Message):
+            text = (
+                "<b>Команды бота:</b>\n\n"
+                "/status — статус всех стримеров\n"
+                "/rating — рейтинг\n"
+                "/points — таблица очков\n"
+                "/streamer [номер/имя] — инфо о стримере\n"
+                "/list — список всех стримеров\n\n"
+                "/timer — таймеры текущих игр\n"
+                "/game [название] — инфо об игре\n"
+                "/stats [имя] — статистика игрока\n"
+                "/inventory [имя] — инвентарь\n"
+                "/achievements — все достижения\n"
+                "/social [имя] — ссылки стримера\n"
+                "/nassal_top — топ с подробностями\n"
+            )
+            await message.answer(text, parse_mode="HTML")
+
         @self.dp.message(Command("status"))
         async def cmd_status(message: types.Message):
-            await message.answer("🔄 Получаю статусы...")
+            await message.answer("Получаю статусы...")
             data = await self.get_participants_data()
-            
             if not data:
-                await message.answer("❌ Не удалось получить данные")
-                return
-            
+                return await message.answer("Не удалось")
             leaderboard = self._get_leaderboard(data)
-            
-            text = "📊 <b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n"
-            text += "━━━━━━━━━━━━━━━━━━━━\n\n"
-            
+            text = "<b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
             for name, info in leaderboard:
-                real_position = self._get_real_position(data, name)
-                points = info['points']
-                
-                if points > 0:
-                    points_str = f"+{points}"
-                elif points < 0:
-                    points_str = str(points)
+                pos = self._get_real_position(data, name)
+                pts = info['points']
+                pts_str = f"+{pts}" if pts > 0 else str(pts)
+                icon = self._format_streaming_status_short(info.get('is_streaming', False), info.get('streaming_platforms', []))
+
+                game = info.get('game_title', '')
+                ts = info.get('timer_started', '')
+                hltb = info.get('hltb_seconds', 0)
+                action = info.get('action_kind', '')
+
+                text += f"<b>{name}</b> {icon}  \U0001f3c6 {pos} | \u2b50 {pts_str}\n"
+
+                if game:
+                    text += f"  \U0001f3ae {game}\n"
+                    if hltb > 0:
+                        text += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
+                    if ts:
+                        el = info.get('timer_accumulated', 0) + elapsed_since(ts)
+                        text += f"  \u23f1 Играет: {format_duration(el)}\n"
+                    elif info.get('timer_accumulated', 0) > 0:
+                        text += f"  \u23f1 На паузе: {format_duration(info.get('timer_accumulated', 0))}\n"
+                    rw, pn = info.get('game_reward', 0), info.get('game_penalty', 0)
+                    if rw or pn:
+                        text += f"  \U0001f4b0 +{rw} / -{pn}\n"
+                    text += "\n"
+                elif action and action != 'none':
+                    act_text = "Аукцион" if action == 'auction' else "Крутит колесо"
+                    text += f"  \U0001f3af {act_text}\n\n"
                 else:
-                    points_str = "0"
-                
-                is_streaming = info.get('is_streaming', False)
-                streaming_platforms = info.get('streaming_platforms', [])
-                stream_icon = self._format_streaming_status_short(is_streaming, streaming_platforms)
-                
-                activity = self._format_activity_short(info)
-                
-                text += f"👤 <b>{name}</b> {stream_icon}\n"
-                text += f"🏆 {real_position} место | ⭐ Очки: {points_str}\n"
-                text += f"{activity}\n\n"
-            
-            text += "━━━━━━━━━━━━━━━━━━━━\n"
-            text += "🟢 — онлайн | 🔴 — оффлайн"
-            
-            if len(text) > 4000:
-                header = "📊 <b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-                footer = "\n━━━━━━━━━━━━━━━━━━━━\n🟢 — онлайн | 🔴 — оффлайн"
-                
-                parts = []
-                current_part = header
-                current_len = len(header)
-                
-                for name, info in leaderboard:
-                    real_position = self._get_real_position(data, name)
-                    points = info['points']
-                    
-                    if points > 0:
-                        points_str = f"+{points}"
-                    elif points < 0:
-                        points_str = str(points)
-                    else:
-                        points_str = "0"
-                    
-                    is_streaming = info.get('is_streaming', False)
-                    streaming_platforms = info.get('streaming_platforms', [])
-                    stream_icon = self._format_streaming_status_short(is_streaming, streaming_platforms)
-                    activity = self._format_activity_short(info)
-                    
-                    block = f"👤 <b>{name}</b> {stream_icon}\n🏆 {real_position} место | ⭐ Очки: {points_str}\n{activity}\n\n"
-                    
-                    if current_len + len(block) + len(footer) > 4000:
-                        current_part += footer
-                        parts.append(current_part)
-                        current_part = header + block
-                        current_len = len(header) + len(block)
-                    else:
-                        current_part += block
-                        current_len += len(block)
-                
-                current_part += footer
-                parts.append(current_part)
-                
-                for part in parts:
-                    await message.answer(part, parse_mode="HTML")
-            else:
-                await message.answer(text, parse_mode="HTML")
-        
+                    text += f"  \u26aa Ожидание\n\n"
+
+            text += "━━━━━━━━━━━━━━━━━━━━\n\U0001f7e2 — онлайн | \U0001f534 — оффлайн"
+            for i in range(0, len(text), 4000):
+                await message.answer(text[i:i+4000], parse_mode="HTML")
+
         @self.dp.message(Command("list"))
         async def cmd_list(message: types.Message):
-            text = "📋 <b>Участники:</b>\n\n"
+            text = "<b>Участники:</b>\n\n"
             for num, name in STREAMERS.items():
                 text += f"{num}. <b>{name}</b>\n"
             await message.answer(text, parse_mode="HTML")
-        
+
         @self.dp.message(Command("rating"))
         async def cmd_rating(message: types.Message):
-            """Рейтинг с выравниванием и статусом онлайн/оффлайн"""
-            await message.answer("🔄 Получаю рейтинг...")
+            await message.answer("Получаю рейтинг...")
             data = await self.get_participants_data()
-            
             if not data:
-                await message.answer("❌ Не удалось")
-                return
-            
+                return await message.answer("Не удалось")
             leaderboard = self._get_leaderboard(data)
-            
-            text = "🏆 <b>РЕЙТИНГ</b>\n"
-            text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            
-            medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-            
-            # Ширина базовой части для выравнивания
-            MAX_WIDTH = 28
-            
+            medals = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}
+            text = "<b>РЕЙТИНГ</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             for i, (name, info) in enumerate(leaderboard, 1):
-                points = info['points']
+                pts = info['points']
+                pts_str = f"+{pts}" if pts > 0 else str(pts)
                 medal = medals.get(i, f"{i}.")
-                
-                # Очки
-                if points > 0:
-                    points_str = f"+{points}"
-                elif points < 0:
-                    points_str = str(points)
-                else:
-                    points_str = "0"
-                
-                # Статус стрима - используем ОРИГИНАЛЬНУЮ логику из info
-                is_streaming = info.get('is_streaming', False)
-                stream_emoji = "🟢" if is_streaming else "🔴"
-                
-                # Базовая строка
-                base = f"{medal} {name} {points_str}"
-                
-                # Считаем видимую длину (без эмодзи и тегов)
-                visible = self._visible_len(base)
-                
-                # Добавляем пробелы для выравнивания
-                if visible < MAX_WIDTH:
-                    spaces = " " * (MAX_WIDTH - visible)
-                else:
-                    spaces = " "
-                
-                text += f"{base}{spaces}{stream_emoji}\n"
-            
-            text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            text += "🟢 — онлайн  |  🔴 — оффлайн"
-            
+                icon = "\U0001f7e2" if info.get('is_streaming', False) else "\U0001f534"
+                base = f"{medal} {name} {pts_str}"
+                vis = self._visible_len(base)
+                spaces = " " * max(28 - vis, 1)
+                text += f"{base}{spaces}{icon}\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\U0001f7e2 — онлайн  |  \U0001f534 — оффлайн"
             await message.answer(text, parse_mode="HTML")
-        
+
         @self.dp.message(Command("points"))
         async def cmd_points(message: types.Message):
-            await message.answer("🔄 Получаю...")
+            await message.answer("Получаю...")
             data = await self.get_participants_data()
-            
             if not data:
-                await message.answer("❌ Не удалось")
-                return
-            
-            leaderboard = self._get_leaderboard(data)
-            
-            text = "📊 <b>ОЧКИ</b>\n━━━━━━━━━━━━\n\n"
-            
-            for i, (name, info) in enumerate(leaderboard, 1):
-                points = info['points']
-                
-                if points > 0:
-                    points_str = f"+{points}"
-                elif points < 0:
-                    points_str = str(points)
-                else:
-                    points_str = "0"
-                
-                text += f"{i}. <b>{name}</b> — {points_str}\n"
-            
+                return await message.answer("Не удалось")
+            text = "<b>ОЧКИ</b>\n━━━━━━━━━━━━\n\n"
+            for i, (name, info) in enumerate(self._get_leaderboard(data), 1):
+                pts = info['points']
+                pts_str = f"+{pts}" if pts > 0 else str(pts)
+                text += f"{i}. <b>{name}</b> — {pts_str}\n"
             await message.answer(text, parse_mode="HTML")
-        
+
         @self.dp.message(Command("streamer"))
         async def cmd_streamer(message: types.Message):
             if len(message.text.split()) < 2:
-                await message.answer("❌ Пример: /streamer 1")
-                return
-            
+                return await message.answer("Пример: /streamer 1")
             query = message.text.split(maxsplit=1)[1].strip()
-            streamer_name = None
-            
-            if query.isdigit():
-                num = int(query)
-                streamer_name = STREAMERS.get(num)
-            else:
-                query_lower = query.lower().strip()
-                if query_lower in STREAMERS_BY_NAME:
-                    streamer_name = STREAMERS[STREAMERS_BY_NAME[query_lower]]
-                else:
-                    for name in STREAMERS.values():
-                        if query_lower in name.lower():
-                            streamer_name = name
-                            break
-            
-            if not streamer_name:
-                await message.answer(f"❌ '{query}' не найден")
-                return
-            
-            await message.answer(f"⏳ Загрузка...", parse_mode="HTML")
-            info = await self.get_detailed_streamer_info(streamer_name)
-            
-            if info:
-                await message.answer(info, parse_mode="HTML")
-            else:
-                await message.answer("❌ Не удалось")
-        
+            name = self._resolve_streamer(query)
+            if not name:
+                return await message.answer(f"'{query}' не найден")
+            await message.answer("Загрузка...")
+            info = await self.get_detailed_streamer_info(name)
+            await message.answer(info or "Не удалось", parse_mode="HTML", disable_web_page_preview=True)
+
         @self.dp.message(Command("monitor"))
         async def cmd_monitor(message: types.Message):
             args = message.text.split()[1:] if len(message.text.split()) > 1 else []
-            
             if len(args) == 0:
-                chat_id = message.chat.id
-                thread_id = message.message_thread_id
-                chat_title = message.chat.title or 'Unknown'
+                chat_id, thread_id = message.chat.id, message.message_thread_id
+                title = message.chat.title or 'Unknown'
             elif len(args) == 1 and self.is_admin(message.from_user.id):
                 try:
-                    chat_id = int(args[0])
-                    thread_id = None
-                    chat_title = f"Группа {chat_id}"
+                    chat_id, thread_id, title = int(args[0]), None, f"Group {args[0]}"
                 except:
-                    await message.answer("❌ Неверный ID")
-                    return
+                    return await message.answer("Неверный ID")
             elif len(args) == 2 and self.is_admin(message.from_user.id):
                 try:
-                    chat_id = int(args[0])
-                    thread_id = int(args[1])
-                    chat_title = f"Группа {chat_id}"
+                    chat_id, thread_id, title = int(args[0]), int(args[1]), f"Group {args[0]}"
                 except:
-                    await message.answer("❌ Неверные ID")
-                    return
+                    return await message.answer("Неверные ID")
             else:
-                await message.answer("❌ Только админ может указывать ID")
-                return
-            
-            for group in self.monitoring_groups:
-                if group['chat_id'] == chat_id and group.get('thread_id') == thread_id:
-                    await message.answer("✅ Уже активен")
-                    return
-            
-            self.monitoring_groups.append({
-                'chat_id': chat_id,
-                'chat_title': chat_title,
-                'thread_id': thread_id,
-                'added_at': time.time()
-            })
+                return await message.answer("Только админ может указывать ID")
+            for g in self.monitoring_groups:
+                if g['chat_id'] == chat_id and g.get('thread_id') == thread_id:
+                    return await message.answer("Уже активен")
+            self.monitoring_groups.append({'chat_id': chat_id, 'chat_title': title, 'thread_id': thread_id, 'added_at': time.time()})
             self.save_groups()
-            
-            await message.answer("🔔 <b>Мониторинг включен!</b>", parse_mode="HTML")
-            
+            await message.answer("<b>Мониторинг включен!</b>", parse_mode="HTML")
             self.start_monitoring()
-        
+
         @self.dp.message(Command("stop"))
         async def cmd_stop(message: types.Message):
             if not self.is_admin(message.from_user.id):
-                await message.answer("❌ Только админ")
-                return
-            
+                return await message.answer("Только админ")
             self.monitoring_active = False
             if self.monitor_loop_task and not self.monitor_loop_task.done():
                 self.monitor_loop_task.cancel()
-            
-            await message.answer("👋 Остановлен")
+            await message.answer("Остановлен")
             if self.session:
                 await self.session.close()
             await self.bot.close()
-        
+
+        @self.dp.message(Command("timer"))
+        async def cmd_timer(message: types.Message):
+            await message.answer("Получаю таймеры...")
+            data = await self.get_participants_data()
+            if not data:
+                return await message.answer("Не удалось")
+            text = "<b>\U0001f552 ТАЙМЕРЫ ТЕКУЩИХ ИГР</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            active = [(n, i) for n, i in data.items() if i.get('timer_started', '')]
+            if not active:
+                text += "Никто сейчас не играет\n"
+            else:
+                for name, info in active:
+                    acc = info.get('timer_accumulated', 0)
+                    el = acc + elapsed_since(info.get('timer_started', ''))
+                    hltb = info.get('hltb_seconds', 0)
+                    game = info.get('game_title', '?')
+                    text += f"<b>{name}</b>\n  \U0001f3ae {game}\n  \u23f1 Играет: <b>{format_duration(el)}</b>\n"
+                    if hltb > 0:
+                        text += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
+                    rw, pn = info.get('game_reward', 0), info.get('game_penalty', 0)
+                    if rw or pn:
+                        text += f"  \U0001f4b0 +{rw} / -{pn}\n"
+                    text += "\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\U0001f7e2 — онлайн | \U0001f534 — оффлайн"
+            await message.answer(text, parse_mode="HTML")
+
+        @self.dp.message(Command("game"))
+        async def cmd_game(message: types.Message):
+            if len(message.text.split()) < 2:
+                return await message.answer("Пример: /game Total Overdose\nИли: /game Lasqa (покажет текущую игру)")
+            query = message.text.split(maxsplit=1)[1].strip()
+            query_lower = query.lower()
+            data = await self.get_participants_data()
+
+            name = self._resolve_streamer(query)
+            if name and name in data:
+                info = data[name]
+                gt = info.get('game_title', '')
+                if gt:
+                    found = (name, info)
+                else:
+                    return await message.answer(f"<b>{name}</b> сейчас не в игре", parse_mode="HTML")
+            else:
+                found = None
+                for n, info in data.items():
+                    gt = info.get('game_title', '')
+                    if gt and query_lower in gt.lower():
+                        found = (n, info)
+                        break
+
+            if not found:
+                await message.answer(f"Ищу '<b>{query}</b>' на HLTB...", parse_mode="HTML")
+                hltb_result = await self.search_hltb(query)
+
+                if hltb_result:
+                    name_hltb = hltb_result.get("name", query)
+                    game_id = hltb_result.get("id", "")
+                    main_time = hltb_result.get("main_time", 0)
+                    extra_time = hltb_result.get("extra_time", 0)
+                    c100 = hltb_result.get("hundred_time", 0)
+                    developer = hltb_result.get("developer", "")
+                    publisher = hltb_result.get("publisher", "")
+                    genres = hltb_result.get("genres", "")
+                    platforms = hltb_result.get("platforms", "")
+                    release = hltb_result.get("release_year", "")
+                    release_na = hltb_result.get("release_na", "")
+                    release_eu = hltb_result.get("release_eu", "")
+                    release_jp = hltb_result.get("release_jp", "")
+
+                    text = f"\U0001f3ae <b>{name_hltb}</b>\n"
+                    if release:
+                        text += f"\U0001f4c5 Год: {release}\n"
+                    if release_na and release_na != "0000-00-00":
+                        text += f"  \U0001f1fa\U0001f1f8 NA: {release_na}\n"
+                    if release_eu and release_eu != "0000-00-00":
+                        text += f"  \U0001f1ea\U0001f1fa EU: {release_eu}\n"
+                    if release_jp and release_jp != "0000-00-00":
+                        text += f"  \U0001f1ef\U0001f1f5 JP: {release_jp}\n"
+                    if developer:
+                        text += f"\U0001f3d7 Разработчик: {developer}\n"
+                    if publisher:
+                        text += f"\U0001f4e2 Издатель: {publisher}\n"
+                    if genres:
+                        text += f"\U0001f3a8 Жанры: {genres}\n"
+                    if platforms:
+                        text += f"\u2328 Платформы: {platforms}\n"
+                    text += "\n"
+
+                    if game_id:
+                        text += f"\U0001f552 <a href='https://howlongtobeat.com/game/{game_id}'>страница на HLTB</a>\n\n"
+
+                    if main_time > 0:
+                        text += f"\u23f1 Основная история: {format_duration(main_time)}\n"
+                    if extra_time > 0:
+                        text += f"\u23f1 С дополнениями: {format_duration(extra_time)}\n"
+                    if c100 > 0:
+                        text += f"\u23f1 100% прохождение: {format_duration(c100)}\n"
+
+                    text += f"\n<i>Данные с HLTB. Инфо от стримеров пока нет.</i>"
+                    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+                else:
+                    hltb_q = query.replace(' ', '+')
+                    text = (
+                        f"\u2753 Игра '<b>{query}</b>' не найдена\n\n"
+                        f"<a href='https://howlongtobeat.com/?q={hltb_q}'>Поискать на HLTB вручную</a>"
+                    )
+                    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+                return
+
+            name, info = found
+            gt = info.get('game_title', '')
+            emoji = "\U0001f3ae" if info.get('game_type') == 'game' else "\u26a1"
+            text = f"{emoji} <b>{gt}</b>\nСтример: <b>{name}</b>\n\n"
+
+            hltb_data = None
+            try:
+                hltb_data = await self.search_hltb(gt)
+            except Exception:
+                pass
+
+            yr = info.get('release_year')
+            if not yr and hltb_data:
+                yr = hltb_data.get("release_year", "")
+            if yr: text += f"\U0001f4c5 Год: {yr}\n"
+            if hltb_data:
+                na = hltb_data.get("release_na", "")
+                eu = hltb_data.get("release_eu", "")
+                jp = hltb_data.get("release_jp", "")
+                if na and na != "0000-00-00": text += f"  \U0001f1fa\U0001f1f8 NA: {na}\n"
+                if eu and eu != "0000-00-00": text += f"  \U0001f1ea\U0001f1fa EU: {eu}\n"
+                if jp and jp != "0000-00-00": text += f"  \U0001f1ef\U0001f1f5 JP: {jp}\n"
+
+            if hltb_data:
+                dev = hltb_data.get("developer", "")
+                pub = hltb_data.get("publisher", "")
+                genres = hltb_data.get("genres", "")
+                platforms = hltb_data.get("platforms", "")
+                if dev: text += f"\U0001f3d7 Разработчик: {dev}\n"
+                if pub: text += f"\U0001f4e2 Издатель: {pub}\n"
+                if genres: text += f"\U0001f3a8 Жанры: {genres}\n"
+                if platforms: text += f"\u2328 Платформы: {platforms}\n"
+
+            rs = info.get('review_score')
+            if rs is not None:
+                se = "\U0001f44d" if rs >= 75 else ("\U0001f914" if rs >= 50 else "\U0001f44e")
+                text += f"{se} Оценка: {rs}/100\n"
+
+            hltb = info.get('hltb_seconds', 0)
+            hid = info.get('hltb_game_id')
+            if hltb > 0:
+                text += f"\U0001f552 HLTB: {format_duration(hltb)}\n"
+                if hid: text += f"    <a href='https://howlongtobeat.com/game/{hid}'>открыть на HLTB</a>\n"
+            elif hltb_data and hltb_data.get("main_time", 0) > 0:
+                text += f"\U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_data.get('id', '')}'>{format_duration(hltb_data['main_time'])}</a>\n"
+
+            sid = info.get('steam_app_id')
+            if sid: text += f"\u2699\ufe0f Steam: <a href='https://store.steampowered.com/app/{sid}'>магазин</a>\n"
+            rw, pn = info.get('game_reward', 0), info.get('game_penalty', 0)
+            if rw or pn: text += f"\n\U0001f4b0 Награда: +{rw}\n\U0001f494 Штраф: -{pn}\n"
+            ft, fp = info.get('fastest_time'), info.get('fastest_player')
+            if ft and fp: text += f"\n\u26a1 Рекорд: {format_duration(ft)} — {fp}\n"
+            ts = info.get('timer_started', '')
+            if ts:
+                el = info.get('timer_accumulated', 0) + elapsed_since(ts)
+                text += f"\n\u23f1 Играет: <b>{format_duration(el)}</b>\n"
+            await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+        @self.dp.message(Command("stats"))
+        async def cmd_stats(message: types.Message):
+            if len(message.text.split()) < 2:
+                return await message.answer("Пример: /stats Lasqa")
+            query = message.text.split(maxsplit=1)[1].strip()
+            name = self._resolve_streamer(query)
+            if not name:
+                return await message.answer(f"'{query}' не найден")
+            data = await self.get_participants_data()
+            if name not in data:
+                return await message.answer("Данные не найдены")
+            info = data[name]
+            pos = self._get_real_position(data, name)
+            pts = info['points']
+            pts_str = f"+{pts}" if pts > 0 else str(pts)
+            text = f"<b>\U0001f4ca СТАТИСТИКА: {name}</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+            text += f"\U0001f3c6 Место: {pos} из {len(data)}\n\u2b50 Очки: {pts_str}\n\n"
+            text += "<b>\U0001f3ae Игры:</b>\n"
+            text += f"  Ход: {info.get('turn', 0)}\n"
+            text += f"  \u2705 Пройдено: {info.get('completed', 0)} | \u274c Дропов: {info.get('drop_count', 0)} | \U0001f504 Рероллов: {info.get('rerolled', 0)}\n"
+            text += f"  \U0001f525 Серия без дропов: {info.get('game_streak', 0)}\n"
+            tp = info.get('total_playtime', 0)
+            if tp > 0: text += f"  \U0001f553 Общее время в играх: {format_duration(tp)}\n"
+
+            game = info.get('game_title', '')
+            if game:
+                text += f"\n  Сейчас играет: <b>{game}</b>\n"
+            text += f"\n<b>\u2b50 Очки:</b>\n  Заработано: +{info.get('ggp_earned_total', 0)} | Потеряно: -{info.get('ggp_lost_total', 0)}\n  Чистый: {info.get('ggp_net_games', 0)}\n"
+            text += f"\n<b>\U0001f3b4 Фишки:</b>\n  Платиновые: {info.get('platinum_chips', 0)} | Потрачено: {info.get('chips_spent_total', 0)}\n  Серия слотов: {info.get('slot_streak', 0)} | Гнусы: {info.get('gnus_available', 0)}\n"
+            cp = info.get('casino_phase')
+            if cp: text += f"  Казино: {cp}\n"
+            text += f"\n<b>\U0001f3b0 Роллы:</b>\n  Всего: {info.get('roll_total', 0)} (обыч: {info.get('roll_regular', 0)}, плат: {info.get('roll_platinum', 0)})\n"
+            text += f"  \U0001f49a +{info.get('roll_positive', 0)} | \U0001f494 -{info.get('roll_negative', 0)} | \u26aa {info.get('roll_neutral', 0)}\n"
+            text += f"  Среднее за ход: {info.get('avg_rolls_turn', 0)}\n"
+
+            p_ach = info.get('player_achievements', [])
+            if p_ach:
+                text += f"\n<b>\U0001f3c5 Достижения ({len(p_ach)}):</b>\n"
+                for ach in p_ach[:8]:
+                    text += f"  \U0001f31f {ach.get('title', '?')}\n"
+                if len(p_ach) > 8:
+                    text += f"  ... и ещё {len(p_ach) - 8}\n"
+
+            text += f"\n\U0001f517 <a href='https://nassal.pro/'>Полная статистика на сайте</a>"
+            await message.answer(text, parse_mode="HTML")
+
+        @self.dp.message(Command("inventory"))
+        async def cmd_inventory(message: types.Message):
+            if len(message.text.split()) < 2:
+                return await message.answer("Пример: /inventory Lasqa")
+            query = message.text.split(maxsplit=1)[1].strip()
+            name = self._resolve_streamer(query)
+            if not name:
+                return await message.answer(f"'{query}' не найден")
+            data = await self.get_participants_data()
+            if name not in data:
+                return await message.answer("Данные не найдены")
+            info = data[name]
+            inv = info.get('inventory_effects', [])
+            att = info.get('attached_effects', [])
+            text = f"<b>\U0001f392 ИНВЕНТАРЬ: {name}</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+            if inv:
+                text += "<b>Предметы:</b>\n"
+                for e in inv:
+                    en = e.get('displayName', e.get('name', '?'))
+                    desc = e.get('description', '')
+                    if isinstance(desc, list): desc = ' '.join(desc)
+                    imp = e.get('impact', '')
+                    em = "\U0001f48e" if imp == 'positive' else ("\U0001f4a5" if imp == 'negative' else "\u26aa")
+                    text += f"{em} <b>{en}</b>\n"
+                    if desc: text += f"  <i>{desc[:120]}{'...' if len(desc)>120 else ''}</i>\n"
+                    text += "\n"
+            else:
+                text += "\U0001f4e6 Пусто\n\n"
+            if att:
+                text += "<b>\U0001f6e1 Активные:</b>\n"
+                for e in att:
+                    text += f"  \U0001f48e <b>{e.get('displayName', e.get('name', '?'))}</b>\n"
+            else:
+                text += "\U0001f6e1 Нет активных эффектов\n"
+            await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+        @self.dp.message(Command("achievements"))
+        async def cmd_achievements(message: types.Message):
+            await message.answer("Получаю достижения...")
+            ach_data = await self.get_achievements_data()
+            if not ach_data:
+                return await message.answer("Не удалось")
+            achievements = ach_data.get('achievements', [])
+            total = ach_data.get('totalCount', 0)
+            revealed = ach_data.get('revealedCount', 0)
+            text = f"<b>\U0001f3c5 ДОСТИЖЕНИЯ ({revealed}/{total})</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+            for ach in achievements:
+                title = ach.get('title', '?')
+                desc = ach.get('description', '')
+                all_players = [p.get('name', '?') for p in ach.get('achievedPlayers', [])]
+                text += f"\U0001f31f <b>{title}</b>\n  <i>{desc}</i>\n"
+                if all_players:
+                    text += f"  \U0001f464 {', '.join(f'<b>{p}</b>' for p in all_players)}\n"
+                text += "\n"
+                if len(text) > 3500:
+                    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+                    text = ""
+            if text.strip():
+                await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+        @self.dp.message(Command("social"))
+        async def cmd_social(message: types.Message):
+            if len(message.text.split()) < 2:
+                return await message.answer("Пример: /social Lasqa")
+            query = message.text.split(maxsplit=1)[1].strip()
+            name = self._resolve_streamer(query)
+            if not name:
+                return await message.answer(f"'{query}' не найден")
+            data = await self.get_participants_data()
+            if name not in data:
+                return await message.answer("Данные не найдены")
+            info = data[name]
+            social = info.get('social_links', [])
+            streaming = info.get('streaming_platforms', [])
+            text = f"<b>\U0001f517 ССЫЛКИ: {name}</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+            if streaming:
+                text += "<b>\U0001f534 Онлайн сейчас:</b>\n"
+                for s in streaming:
+                    text += f"  \U0001f7e2 {s.get('platform', '')}: {s.get('username', '')}\n"
+                text += "\n"
+            if social:
+                text += "<b>Соцсети:</b>\n"
+                emojis = {'twitch': '\U0001f7e3', 'youtube': '\U0001f534', 'kick': '\U0001f7e2', 'telegram': '\u2708\ufe0f', 'vk': '\U0001f535', 'vklive': '\U0001f535'}
+                for link in social:
+                    em = emojis.get(link.get('platform', ''), '\U0001f517')
+                    text += f"{em} {link.get('platform', '')}: <a href='{link.get('url', '')}'>{link.get('url', '')}</a>\n"
+            else:
+                text += "Нет ссылок\n"
+            await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+        @self.dp.message(Command("top"))
+        @self.dp.message(Command("nassal_top"))
+        async def cmd_nassal_top(message: types.Message):
+            await message.answer("Получаю...")
+            data = await self.get_participants_data()
+            if not data:
+                return await message.answer("Не удалось")
+            medals = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}
+            text = "<b>\U0001f3c6 ТОП NASSAL</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for i, (name, info) in enumerate(self._get_leaderboard(data), 1):
+                pts = info['points']
+                pts_str = f"+{pts}" if pts > 0 else str(pts)
+                medal = medals.get(i, f"{i}.")
+                icon = "\U0001f7e2" if info.get('is_streaming', False) else "\U0001f534"
+                text += f"{medal} <b>{name}</b> {icon}\n  \u2b50 {pts_str} | \u2705 {info.get('completed', 0)} игр | \u274c {info.get('drop_count', 0)} дропов\n  \U0001f525 Серия: {info.get('game_streak', 0)}"
+                tp = info.get('total_playtime', 0)
+                if tp > 0: text += f" | \U0001f553 {format_duration_short(tp)}"
+                text += "\n\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            for i in range(0, len(text), 4000):
+                await message.answer(text[i:i+4000], parse_mode="HTML")
+
         @self.dp.message()
         async def handle_keyboard(message: types.Message):
             text = message.text.strip()
             for num, name in STREAMERS.items():
                 if text == f"{num}. {name}" or text == name:
-                    await message.answer(f"⏳ Загрузка...", parse_mode="HTML")
+                    await message.answer("Загрузка...")
                     info = await self.get_detailed_streamer_info(name)
-                    if info:
-                        await message.answer(info, parse_mode="HTML")
-                    else:
-                        await message.answer("❌ Не удалось")
+                    await message.answer(info or "Не удалось", parse_mode="HTML", disable_web_page_preview=True)
                     return
-        
-        logger.info("🚀 Бот запущен!")
-        
+
+        logger.info("Bot started!")
         if self.monitoring_groups:
-            logger.info("🔄 Запускаю мониторинг...")
             self.start_monitoring()
-        
         await self.dp.start_polling(self.bot)
-    
+
     async def monitor_loop(self):
         if self.monitoring_active:
-            logger.warning("⚠️ Мониторинг уже активен, не запускаю второй цикл!")
             return
-        
-        logger.info("🔄 Запуск monitor_loop...")
         self.monitoring_active = True
-        
         initial_data = await self.get_participants_data()
-        
         if not initial_data:
-            logger.error("❌ Не удалось получить данные")
             self.monitoring_active = False
             return
-        
         self.previous_data = initial_data
-        logger.info(f"✅ Запомнено ({len(initial_data)} участников)")
-        
-        cycle_count = 0
+
         while self.monitoring_active:
             try:
-                cycle_count += 1
-                
+                self.api_cache = None
                 current_data = await self.get_participants_data()
-                
-                if not current_data:
-                    await asyncio.sleep(10)
-                    continue
-                
-                if self.previous_data:
+                if current_data and self.previous_data:
                     changes = self.compare_data(self.previous_data, current_data)
-                    
                     if changes:
-                        notification = self._format_notification(changes)
-                        await self.send_notification(notification)
-                        logger.info(f"📤 Отправлено уведомление")
-                
-                self.previous_data = current_data
-                
+                        await self.send_notification(self._format_notification(changes))
+                if current_data:
+                    self.previous_data = current_data
             except Exception as e:
-                logger.error(f"❌ Ошибка: {e}")
-            
+                logger.error(f"Error: {e}")
             await asyncio.sleep(10)
-        
-        logger.info("⏹️ Мониторинг остановлен")
-    
+
     def _format_notification(self, changes: list) -> str:
-        notification = "🔔 <b>ИЗМЕНЕНИЯ НА NASSAL.PRO</b>\n"
-        notification += "━━━━━━━━━━━━━━━━━━━━\n\n"
-        notification += "\n\n".join(changes)
-        notification += "\n\n━━━━━━━━━━━━━━━━━━━━"
-        return notification
-    
+        return "<b>\U0001f514 ИЗМЕНЕНИЯ НА NASSAL.PRO</b>\n━━━━━━━━━━━━━━━━━━━━\n\n" + "\n\n".join(changes) + "\n\n━━━━━━━━━━━━━━━━━━━━"
+
     def compare_data(self, old_data: Dict, new_data: Dict) -> list:
         changes = []
-        
-        old_positions = {}
-        new_positions = {}
-        
-        old_leaderboard = self._get_leaderboard(old_data)
-        new_leaderboard = self._get_leaderboard(new_data)
-        
-        for i, (name, _) in enumerate(old_leaderboard, 1):
-            old_positions[name] = i
-        
-        for i, (name, _) in enumerate(new_leaderboard, 1):
-            new_positions[name] = i
-        
-        position_changes = []
-        for name in new_data.keys():
-            if name in old_positions and name in new_positions:
-                old_pos = old_positions[name]
-                new_pos = new_positions[name]
-                
-                if old_pos != new_pos:
-                    diff = old_pos - new_pos
-                    
-                    if diff > 0:
-                        word_num = self._number_to_word(diff)
-                        pos_word = self._get_position_word(diff)
-                        position_changes.append(
-                            f"🚀 <b>{name}</b>: было {old_pos} место 🟢 стало {new_pos} место\n"
-                            f"   ↗️ поднялся на {word_num} {pos_word}"
-                        )
-                    else:
-                        abs_diff = abs(diff)
-                        word_num = self._number_to_word(abs_diff)
-                        pos_word = self._get_position_word(abs_diff)
-                        position_changes.append(
-                            f"📉 <b>{name}</b>: было {old_pos} место 🔻 стало {new_pos} место\n"
-                            f"   ↘️ упал на {word_num} {pos_word}"
-                        )
-        
-        if position_changes:
-            changes.append("📊 <b>ПОЗИЦИИ:</b>\n\n" + "\n\n".join(position_changes))
-        
-        points_changes = []
-        for name, data in new_data.items():
+        old_pos = {n: i for i, (n, _) in enumerate(self._get_leaderboard(old_data), 1)}
+        new_pos = {n: i for i, (n, _) in enumerate(self._get_leaderboard(new_data), 1)}
+
+        pos_changes = []
+        for name in new_data:
+            if name in old_pos and name in new_pos and old_pos[name] != new_pos[name]:
+                diff = old_pos[name] - new_pos[name]
+                if diff > 0:
+                    pos_changes.append(f"\U0001f680 <b>{name}</b>: {old_pos[name]} \u2192 {new_pos[name]} (поднялся на {self._number_to_word(diff)} {self._get_position_word(diff)})")
+                else:
+                    pos_changes.append(f"\U0001f4c9 <b>{name}</b>: {old_pos[name]} \u2192 {new_pos[name]} (упал на {self._number_to_word(abs(diff))} {self._get_position_word(abs(diff))})")
+        if pos_changes:
+            changes.append("\U0001f4ca <b>ПОЗИЦИИ:</b>\n\n" + "\n\n".join(pos_changes))
+
+        pts_changes = []
+        for name, nd in new_data.items():
             if name in old_data:
-                old_points = old_data[name].get('points', 0)
-                new_points = data.get('points', 0)
-                
-                if old_points != new_points:
-                    diff = new_points - old_points
-                    if diff > 0:
-                        emoji = "💚"
-                        sign = "+"
-                    else:
-                        emoji = "💔"
-                        sign = ""
-                    
-                    points_changes.append(
-                        f"{emoji} <b>{name}</b>: {old_points} → {new_points} ({sign}{diff})"
-                    )
-        
-        if points_changes:
-            changes.append("💰 <b>ОЧКИ:</b>\n\n" + "\n\n".join(points_changes))
-        
+                op, np_ = old_data[name].get('points', 0), nd.get('points', 0)
+                if op != np_:
+                    d = np_ - op
+                    em = "\U0001f49a" if d > 0 else "\U0001f494"
+                    pts_changes.append(f"{em} <b>{name}</b>: {op} \u2192 {np_} ({'+' if d>0 else ''}{d})")
+        if pts_changes:
+            changes.append("\U0001f4b0 <b>ОЧКИ:</b>\n\n" + "\n\n".join(pts_changes))
+
         game_changes = []
-        for name, data in new_data.items():
+        for name, nd in new_data.items():
             if name in old_data:
-                old_game = old_data[name].get('game_title', '')
-                new_game = data.get('game_title', '')
-                
-                if old_game != new_game:
-                    if not old_game and new_game:
-                        game_changes.append(
-                            f"🎮 <b>{name}</b> начал играть: <b>{new_game}</b>"
-                        )
-                    elif old_game and not new_game:
-                        game_changes.append(
-                            f"⏹️ <b>{name}</b> закончил: <b>{old_game}</b>"
-                        )
-                    elif old_game and new_game:
-                        game_changes.append(
-                            f"🔄 <b>{name}</b> сменил игру:\n{old_game} → {new_game}"
-                        )
-        
+                og, ng = old_data[name].get('game_title', ''), nd.get('game_title', '')
+                if og != ng:
+                    old_drops = old_data[name].get('drop_count', 0)
+                    new_drops = nd.get('drop_count', 0)
+                    if not og and ng:
+                        game_changes.append(f"\U0001f3ae <b>{name}</b> начал: <b>{ng}</b>")
+                    elif og and not ng:
+                        if new_drops > old_drops:
+                            game_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул: <b>{og}</b>")
+                        else:
+                            game_changes.append(f"\u2705 <b>{name}</b> прошёл: <b>{og}</b>")
+                    elif og and ng:
+                        if new_drops > old_drops:
+                            game_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул <b>{og}</b>, начал: <b>{ng}</b>")
+                        else:
+                            game_changes.append(f"\U0001f504 <b>{name}</b>: {og} \u2192 {ng}")
         if game_changes:
-            changes.append("🎮 <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_changes))
-        
+            changes.append("\U0001f3ae <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_changes))
+
+        timer_changes = []
+        for name, nd in new_data.items():
+            if name in old_data:
+                ot = old_data[name].get('timer_started', '')
+                nt = nd.get('timer_started', '')
+                if ot and not nt:
+                    acc_old = old_data[name].get('timer_accumulated', 0)
+                    el_old = acc_old + elapsed_since(ot)
+                    acc_new = nd.get('timer_accumulated', 0)
+                    el = max(el_old, acc_new)
+                    g = nd.get('game_title', '') or old_data[name].get('game_title', '?')
+                    if el > 0:
+                        timer_changes.append(f"\u23f9\ufe0f <b>{name}</b> завершил: <b>{g}</b> ({format_duration(el)})")
+        if timer_changes:
+            changes.append("\U0001f552 <b>ТАЙМЕРЫ:</b>\n\n" + "\n\n".join(timer_changes))
+
         return changes
 
 
 async def main():
     BOT_TOKEN = os.getenv("BOT_TOKEN")
-    
     if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN не найден!")
+        logger.error("BOT_TOKEN not found!")
         return
-    
-    logger.info(f"✅ Запуск бота")
     monitor = NassalMonitor(BOT_TOKEN)
     await monitor.start()
 
