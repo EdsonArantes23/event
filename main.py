@@ -244,6 +244,9 @@ class NassalMonitor:
             'roll_regular': roll_kind_stats.get('regular', 0),
             'roll_platinum': roll_kind_stats.get('platinum', 0),
             'avg_rolls_turn': roll_kind_stats.get('avgRollsPerTurn', 0),
+            'player_review': ar.get('playerReview') if ar else None,
+            'player_rating': ar.get('playerRating') if ar else None,
+            'auction_id': ar.get('id') if ar else None,
         }
 
         return (name, result)
@@ -1155,7 +1158,7 @@ class NassalMonitor:
                     imp = e.get('impact', '')
                     em = "\U0001f48e" if imp == 'positive' else ("\U0001f4a5" if imp == 'negative' else "\u26aa")
                     text += f"{em} <b>{en}</b>\n"
-                    if desc: text += f"  <i>{desc[:120]}{'...' if len(desc)>120 else ''}</i>\n"
+                    if desc: text += f"  <i>{desc}</i>\n"
                     text += "\n"
             else:
                 text += "\U0001f4e6 Пусто\n\n"
@@ -1349,6 +1352,26 @@ class NassalMonitor:
                         timer_changes.append(f"\u23f9\ufe0f <b>{name}</b> завершил: <b>{g}</b> ({format_duration(el)})")
         if timer_changes:
             changes.append("\U0001f552 <b>ТАЙМЕРЫ:</b>\n\n" + "\n\n".join(timer_changes))
+
+        review_changes = []
+        for name, nd in new_data.items():
+            if name not in old_data:
+                continue
+            od = old_data[name]
+            old_review = od.get('player_review')
+            new_review = nd.get('player_review')
+            old_auction = od.get('auction_id')
+            new_auction = nd.get('auction_id')
+            if new_review and (old_review is None or old_auction != new_auction):
+                game = nd.get('game_title', '') or od.get('game_title', '')
+                rating = nd.get('player_rating')
+                rating_str = f"{rating}/10" if rating is not None else ""
+                review_text = new_review if len(new_review) <= 500 else new_review[:500] + "..."
+                emoji = "\u2705" if rating and rating >= 5 else "\u274c"
+                line = f"{emoji} <b>{name}</b> оставил рецензию на <b>{game}</b> [{rating_str}]:\n\n<i>{review_text}</i>"
+                review_changes.append(line)
+        if review_changes:
+            changes.append("\U0001f4dd <b>РЕЦЕНЗИИ:</b>\n\n" + "\n\n".join(review_changes))
 
         return changes
 
