@@ -486,6 +486,7 @@ class NassalMonitor:
         timer_started = info.get('timer_started', '')
         game_reward = info.get('game_reward', 0)
         game_penalty = info.get('game_penalty', 0)
+        casino_phase = info.get('casino_phase')
 
         if game_title:
             reward_str = ""
@@ -499,9 +500,11 @@ class NassalMonitor:
             prefix = "\U0001f3ae" if game_type == 'game' else "\U0001f4fa"
             label = "Категория" if game_type == 'game' else "Смотрит"
             return f"{prefix} {label}: {game_title}{reward_str}"
+        elif action_kind and action_kind == 'auction':
+            return "\U0001f3af Категория: Аукцион"
+        elif casino_phase:
+            return "\U0001f3b0 Категория: В казино"
         elif timer_started or (action_kind and action_kind != 'none'):
-            if action_kind == 'auction':
-                return "\U0001f3af Категория: Аукцион"
             return "\U0001f3b1 Категория: Крутит колесо"
         return "\u26aa Категория: Ожидание"
 
@@ -623,8 +626,12 @@ class NassalMonitor:
                     msg += f"\n\U0001f4b0 <b>Награда:</b> +{game_reward}\n"
                     msg += f"\U0001f494 <b>Штраф:</b> -{game_penalty}\n"
 
+            elif action_kind and action_kind == 'auction':
+                msg += f"\n\U0001f3af <b>Действие:</b> Аукцион\n"
+            elif casino_phase:
+                msg += f"\n\U0001f3b0 <b>Действие:</b> В казино\n"
             elif timer_started or (action_kind and action_kind != 'none'):
-                msg += f"\n\U0001f3af <b>Действие:</b> {'Аукцион' if action_kind == 'auction' else 'Крутит колесо'}\n"
+                msg += f"\n\U0001f3b1 <b>Действие:</b> Крутит колесо\n"
             else:
                 msg += f"\n\u26aa <b>Статус:</b> Не активен\n"
 
@@ -726,7 +733,10 @@ class NassalMonitor:
                         text += f"   Накоплено: {auction.get('timerAccumulatedSec', 0)}с\n"
                         text += f"   Рецензия: {(auction.get('playerReview') or '-')[:50]}\n"
                         text += f"   Оценка игрока: {auction.get('playerRating', '-')}\n"
-                        text += f"   HLTB: {format_duration(auction.get('seconds', 0)) or '-'}\n\n"
+                        text += f"   HLTB: {format_duration(auction.get('seconds', 0)) or '-'}\n"
+                        text += f"   CasinoPhase: {player.get('casinoPhase', '-')}\n"
+                        text += f"   PlayerStatus: {player.get('status', '-')}\n"
+                        text += f"   Action: {item.get('requiredAction', {}).get('kind', '-') if item.get('requiredAction') else '-'}\n\n"
                     for i in range(0, len(text), 4000):
                         await message.answer(text[i:i+4000], parse_mode="HTML")
             except Exception as e:
@@ -941,9 +951,12 @@ class NassalMonitor:
                     if rw or pn:
                         text += f"  \U0001f4b0 +{rw} / -{pn}\n"
                     text += "\n"
+                elif action and action == 'auction':
+                    text += f"  \U0001f3af Аукцион\n\n"
+                elif info.get('casino_phase'):
+                    text += f"  \U0001f3b0 В казино\n\n"
                 elif action and action != 'none':
-                    act_text = "Аукцион" if action == 'auction' else "Крутит колесо"
-                    text += f"  \U0001f3af {act_text}\n\n"
+                    text += f"  \U0001f3b1 Крутит колесо\n\n"
                 else:
                     text += f"  \u26aa Ожидание\n\n"
 
@@ -1586,6 +1599,7 @@ class NassalMonitor:
 
         action_changes = []
         game_start_changes = []
+        casino_changes = []
         for name, nd in new_data.items():
             if name not in old_data:
                 continue
@@ -1596,20 +1610,9 @@ class NassalMonitor:
             new_auction_status = nd.get('auction_status', '')
             old_game = od.get('game_title', '')
             new_game = nd.get('game_title', '')
-
-            if old_action != new_action:
-                if new_action == 'auction' and old_action != 'auction':
-                    action_changes.append(f"\U0001f3af <b>{name}</b> проводит аукцион")
-                elif new_action and new_action != 'auction' and old_action == 'auction':
-                    action_changes.append(f"\U0001f3af <b>{name}</b> завершил аукцион")
-                    action_changes.append(f"\U0001f3b1 <b>{name}</b> крутит колесо")
-                elif new_action and new_action != 'auction' and old_action != 'auction':
-                    action_changes.append(f"\U0001f3b1 <b>{name}</b> крутит колесо")
-                elif not new_action and old_action:
-                    if old_action == 'auction':
-                        action_changes.append(f"\U0001f3af <b>{name}</b> завершил аукцион")
-                    else:
-                        action_changes.append(f"\U0001f3b1 <b>{name}</b> завершил рулетку")
+            old_casino = od.get('casino_phase')
+            new_casino = nd.get('casino_phase')
+            in_casino = bool(new_casino)
 
             if new_auction_status and new_auction_status != old_auction_status:
                 if new_auction_status == 'start':
@@ -1618,6 +1621,16 @@ class NassalMonitor:
                     action_changes.append(f"\u23f0 <b>{name}</b>: торги идут")
                 elif new_auction_status == 'finish':
                     action_changes.append(f"\U0001f3c6 <b>{name}</b>: аукцион завершён")
+
+            if new_casino != old_casino:
+                if new_casino and not old_casino:
+                    casino_changes.append(f"\U0001f3b0 <b>{name}</b> зашёл в казино")
+
+            if not in_casino and old_action != new_action:
+                if new_action == 'auction' and old_action != 'auction':
+                    action_changes.append(f"\U0001f3af <b>{name}</b> проводит аукцион")
+                elif not new_action and old_action == 'auction':
+                    action_changes.append(f"\U0001f3af <b>{name}</b> завершил аукцион")
 
             old_timer = od.get('timer_started', '')
             new_timer = nd.get('timer_started', '')
@@ -1639,6 +1652,9 @@ class NassalMonitor:
 
         if game_start_changes:
             changes.append("\U0001f3ae <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_start_changes))
+
+        if casino_changes:
+            changes.append("\U0001f3b0 <b>КАЗИНО:</b>\n\n" + "\n\n".join(casino_changes))
 
         if action_changes:
             changes.append("\U0001f3af <b>АУКЦИОН / РУЛЕТКА:</b>\n\n" + "\n\n".join(action_changes))
