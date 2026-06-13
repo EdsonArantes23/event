@@ -1555,28 +1555,17 @@ class NassalMonitor:
                     pts_str = f" ({'+' if pts_delta > 0 else ''}{pts_delta} очков)" if pts_delta != 0 else ""
                     ot = od.get('game_type', '')
                     nt = nd.get('game_type', '')
-                    is_video_old = ot not in ('game', '')
-                    is_video_new = nt not in ('game', '')
-                    is_video = is_video_old or is_video_new
+                    is_video = ot not in ('game', '') or nt not in ('game', '')
                     if is_video:
-                        act_start = "начал смотреть"
-                        act_done = "посмотрел"
-                        act_drop = "дропнул просмотр"
-                        prefix = "\U0001f4fa"
-                    else:
-                        act_start = "начал"
-                        act_done = "прошёл"
-                        act_drop = "дропнул"
-                        prefix = "\U0001f3ae"
-                    if not og and ng:
-                        game_changes.append(f"{prefix} <b>{name}</b> {act_start}: <b>{ng}</b>")
-                    elif og and not ng:
-                        if new_drops > old_drops:
-                            game_changes.append(f"\U0001f4a9 <b>{name}</b> {act_drop}: <b>{og}</b>{pts_str}")
-                        else:
-                            game_changes.append(f"\u2705 <b>{name}</b> {act_done}: <b>{og}</b>{pts_str}")
+                        if not og and ng:
+                            game_changes.append(f"\U0001f4fa <b>{name}</b> начал смотреть: <b>{ng}</b>")
+                        elif og and not ng:
+                            if new_drops > old_drops:
+                                game_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул просмотр: <b>{og}</b>{pts_str}")
+                            else:
+                                game_changes.append(f"\u2705 <b>{name}</b> посмотрел: <b>{og}</b>{pts_str}")
         if game_changes:
-            changes.append("\U0001f3ae <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_changes))
+            changes.append("\U0001f4fa <b>ВИДЕО:</b>\n\n" + "\n\n".join(game_changes))
 
         review_changes = []
         for name, nd in new_data.items():
@@ -1641,6 +1630,8 @@ class NassalMonitor:
                     action_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул: <b>{old_game}</b>")
                 elif not new_action:
                     action_changes.append(f"\u2705 <b>{name}</b> прошёл: <b>{old_game}</b>")
+
+
 
         if action_changes:
             changes.append("\U0001f3af <b>АУКЦИОН / РУЛЕТКА:</b>\n\n" + "\n\n".join(action_changes))
