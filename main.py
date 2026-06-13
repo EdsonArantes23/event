@@ -113,6 +113,7 @@ class NassalMonitor:
         days = total_sec // 86400
         hours = (total_sec % 86400) // 3600
         minutes = (total_sec % 3600) // 60
+        seconds = total_sec % 60
         parts = []
         if days > 0:
             if days % 10 == 1 and days % 100 != 11:
@@ -128,9 +129,21 @@ class NassalMonitor:
                 parts.append(f"{hours} часа")
             else:
                 parts.append(f"{hours} часов")
-        if minutes > 0 and days == 0:
-            parts.append(f"{minutes} мин")
-        return ", ".join(parts) if parts else "Менее минуты"
+        if minutes > 0:
+            if minutes % 10 == 1 and minutes % 100 != 11:
+                parts.append(f"{minutes} минута")
+            elif minutes % 10 in [2, 3, 4] and minutes % 100 not in [12, 13, 14]:
+                parts.append(f"{minutes} минуты")
+            else:
+                parts.append(f"{minutes} минут")
+        if seconds > 0:
+            if seconds % 10 == 1 and seconds % 100 != 11:
+                parts.append(f"{seconds} секунда")
+            elif seconds % 10 in [2, 3, 4] and seconds % 100 not in [12, 13, 14]:
+                parts.append(f"{seconds} секунды")
+            else:
+                parts.append(f"{seconds} секунд")
+        return ", ".join(parts) if parts else "Менее секунды"
 
     def _is_event_ended(self) -> bool:
         return datetime.now(timezone.utc) >= self._event_end_utc()
