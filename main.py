@@ -4,7 +4,7 @@ import os
 import json
 import re
 import aiohttp
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, List
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
@@ -30,6 +30,9 @@ API_URL = "https://api-game.nassal.pro/api/public/player/list"
 ACHIEVEMENTS_URL = "https://api-game.nassal.pro/api/public/achievements"
 GROUPS_FILE = "monitoring_groups.json"
 ADMINS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "417850992").split(",") if x.strip().isdigit()]
+
+EVENT_END_MSK = datetime(2026, 6, 19, 19, 0, 0)
+MSK_OFFSET = timedelta(hours=3)
 
 NUMBERS_WORDS = {
     1: "одно", 2: "два", 3: "три", 4: "четыре", 5: "пять",
@@ -91,6 +94,53 @@ class NassalMonitor:
         self.api_cache: Optional[Dict] = None
         self.api_cache_time: float = 0
         self.API_CACHE_TTL = 15
+        self.event_sent_notifications: set = set()
+
+    def _now_msk(self) -> datetime:
+        return datetime.now(timezone.utc) + MSK_OFFSET
+
+    def _event_end_utc(self) -> datetime:
+        return EVENT_END_MSK.replace(tzinfo=timezone(timedelta(hours=3)))
+
+    def _time_until_event(self) -> timedelta:
+        return self._event_end_utc() - datetime.now(timezone.utc)
+
+    def _format_countdown(self, delta: timedelta) -> str:
+        total_sec = int(delta.total_seconds())
+        if total_sec <= 0:
+            return "Ивент завершён!"
+        days = total_sec // 86400
+        hours = (total_sec % 86400) // 3600
+        minutes = (total_sec % 3600) // 60
+        parts = []
+        if days > 0:
+            if days % 10 == 1 and days % 100 != 11:
+                parts.append(f"{days} день")
+            elif days % 10 in [2, 3, 4] and days % 100 not in [12, 13, 14]:
+                parts.append(f"{days} дня")
+            else:
+                parts.append(f"{days} дней")
+        if hours > 0:
+            if hours % 10 == 1 and hours % 100 != 11:
+                parts.append(f"{hours} час")
+            elif hours % 10 in [2, 3, 4] and hours % 100 not in [12, 13, 14]:
+                parts.append(f"{hours} часа")
+            else:
+                parts.append(f"{hours} часов")
+        if minutes > 0 and days == 0:
+            parts.append(f"{minutes} мин")
+        return ", ".join(parts) if parts else "Менее минуты"
+
+    def _is_event_ended(self) -> bool:
+        return datetime.now(timezone.utc) >= self._event_end_utc()
+
+    def _is_final_day(self) -> bool:
+        now_msk = self._now_msk()
+        return now_msk.date() == EVENT_END_MSK.date()
+
+    def _get_notification_key(self, kind: str, hour: int = -1) -> str:
+        now_msk = self._now_msk()
+        return f"{kind}_{now_msk.date()}_{hour}" if hour >= 0 else f"{kind}_{now_msk.date()}"
 
     def load_groups(self) -> List[Dict]:
         try:
@@ -432,8 +482,9 @@ class NassalMonitor:
                 if game_penalty:
                     parts.append(f"-{game_penalty}")
                 reward_str = f" ({'/'.join(parts)})"
-            prefix = "\U0001f3ae" if game_type == 'game' else "\u26a1"
-            return f"{prefix} Категория: {game_title}{reward_str}"
+            prefix = "\U0001f3ae" if game_type == 'game' else "\U0001f4fa"
+            label = "Категория" if game_type == 'game' else "Смотрит"
+            return f"{prefix} {label}: {game_title}{reward_str}"
         elif timer_started or (action_kind and action_kind != 'none'):
             if action_kind == 'auction':
                 return "\U0001f3af Категория: Аукцион"
@@ -448,9 +499,11 @@ class NassalMonitor:
         elapsed = accumulated + elapsed_since(timer_started)
         hltb = info.get('hltb_seconds', 0)
         timer_str = format_duration(elapsed)
+        game_type = info.get('game_type', '')
+        timer_label = "Играет" if game_type == 'game' else "Смотрит"
         if hltb > 0:
-            return f"\u23f1 <b>Играет:</b> {timer_str}\n\U0001f552 <b>HLTB:</b> {format_duration(hltb)}"
-        return f"\u23f1 <b>Играет:</b> {timer_str}"
+            return f"\u23f1 <b>{timer_label}:</b> {timer_str}\n\U0001f552 <b>HLTB:</b> {format_duration(hltb)}"
+        return f"\u23f1 <b>{timer_label}:</b> {timer_str}"
 
     def _resolve_streamer(self, query: str) -> Optional[str]:
         if query.isdigit():
@@ -489,7 +542,7 @@ class NassalMonitor:
             game_penalty = info.get('game_penalty', 0)
 
             if game_title:
-                prefix = "\U0001f3ae <b>Игра:</b>" if game_type == 'game' else "\u26a1 <b>Действие:</b>"
+                prefix = "\U0001f3ae <b>Игра:</b>" if game_type == 'game' else "\U0001f4fa <b>Смотрит:</b>"
                 year = info.get('release_year')
                 msg += f"\n{prefix} {game_title}"
                 if year:
@@ -654,6 +707,11 @@ class NassalMonitor:
                         auction = item.get('currentAuctionResult') or {}
                         text += f"<b>{idx+1}. {name}</b>\n"
                         text += f"   Игра: {auction.get('title', '-')}\n"
+                        text += f"   Статус: {auction.get('status', '-')}\n"
+                        text += f"   Таймер: {auction.get('timerStartedAt', '-')}\n"
+                        text += f"   Накоплено: {auction.get('timerAccumulatedSec', 0)}с\n"
+                        text += f"   Рецензия: {(auction.get('playerReview') or '-')[:50]}\n"
+                        text += f"   Оценка игрока: {auction.get('playerRating', '-')}\n"
                         text += f"   HLTB: {format_duration(auction.get('seconds', 0)) or '-'}\n\n"
                     for i in range(0, len(text), 4000):
                         await message.answer(text[i:i+4000], parse_mode="HTML")
@@ -771,6 +829,7 @@ class NassalMonitor:
         async def cmd_help_event(message: types.Message):
             text = (
                 "<b>Команды бота:</b>\n\n"
+                "/event — статус ивента и обратный отсчёт\n"
                 "/status — статус всех стримеров\n"
                 "/rating — рейтинг\n"
                 "/points — таблица очков\n"
@@ -784,6 +843,49 @@ class NassalMonitor:
                 "/social [имя] — ссылки стримера\n"
                 "/nassal_top — топ с подробностями\n"
             )
+            await message.answer(text, parse_mode="HTML")
+
+        @self.dp.message(Command("event"))
+        async def cmd_event(message: types.Message):
+            now_msk = self._now_msk()
+            delta = self._time_until_event()
+            total_sec = int(delta.total_seconds())
+            event_msk = EVENT_END_MSK.strftime("%d.%m.%Y в %H:%M (МСК)")
+            if total_sec <= 0:
+                text = (
+                    "<b>\U0001f3c6 ИВЕНТ ЗАВЕРШЁН!</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"\U0001f4c5 Ивент завершился: {event_msk}\n"
+                    f"\U0001f514 Мониторинг продолжается — возможны корректировки очков.\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━"
+                )
+            else:
+                countdown = self._format_countdown(delta)
+                days_left = (EVENT_END_MSK.date() - now_msk.date()).days
+                if days_left == 0:
+                    status = "\U0001f525 <b>ФИНАЛЬНЫЙ ДЕНЬ!</b>"
+                elif days_left == 1:
+                    status = "\u26a0\ufe0f <b>Завтра — последний день!</b>"
+                elif days_left <= 3:
+                    status = f"\U0001f534 <b>Осталось {days_left} дня</b>"
+                else:
+                    status = f"\U0001f7e2 <b>Осталось {days_left} дней</b>"
+                text = (
+                    "<b>\U0001f3c6 СТАТУС ИВЕНТА</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"{status}\n\n"
+                    f"\U0001f4c5 Дата окончания: <b>{event_msk}</b>\n"
+                    f"\u23f0 До окончания: <b>{countdown}</b>\n\n"
+                )
+                if days_left <= 1:
+                    text += (
+                        f"\U0001f514 Авто-уведомления: <b>каждый час</b> (00:00–18:00)\n"
+                        f"\U0001f525 Последний час (18:00): <b>финальная таблица</b>\n"
+                        f"\U0001f3c6 Итоги (19:00): <b>финальная таблица + завершение</b>\n"
+                    )
+                elif days_left <= 7:
+                    text += f"\U0001f514 Ежедневное напоминание в <b>19:00 (МСК)</b>\n"
+                text += "\n━━━━━━━━━━━━━━━━━━━━"
             await message.answer(text, parse_mode="HTML")
 
         @self.dp.message(Command("status"))
@@ -808,12 +910,15 @@ class NassalMonitor:
                 text += f"<b>{name}</b> {icon}  \U0001f3c6 {pos} | \u2b50 {pts_str}\n"
 
                 if game:
-                    text += f"  \U0001f3ae {game}\n"
+                    game_type = info.get('game_type', '')
+                    game_icon = "\U0001f3ae" if game_type == 'game' else "\U0001f4fa"
+                    timer_label = "Играет" if game_type == 'game' else "Смотрит"
+                    text += f"  {game_icon} {game}\n"
                     if hltb > 0:
                         text += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
                     if ts:
                         el = info.get('timer_accumulated', 0) + elapsed_since(ts)
-                        text += f"  \u23f1 Играет: {format_duration(el)}\n"
+                        text += f"  \u23f1 {timer_label}: {format_duration(el)}\n"
                     elif info.get('timer_accumulated', 0) > 0:
                         text += f"  \u23f1 На паузе: {format_duration(info.get('timer_accumulated', 0))}\n"
                     rw, pn = info.get('game_reward', 0), info.get('game_penalty', 0)
@@ -937,7 +1042,10 @@ class NassalMonitor:
                     el = acc + elapsed_since(info.get('timer_started', ''))
                     hltb = info.get('hltb_seconds', 0)
                     game = info.get('game_title', '?')
-                    text += f"<b>{name}</b>\n  \U0001f3ae {game}\n  \u23f1 Играет: <b>{format_duration(el)}</b>\n"
+                    game_type = info.get('game_type', '')
+                    game_icon = "\U0001f3ae" if game_type == 'game' else "\U0001f4fa"
+                    timer_label = "Играет" if game_type == 'game' else "Смотрит"
+                    text += f"<b>{name}</b>\n  {game_icon} {game}\n  \u23f1 {timer_label}: <b>{format_duration(el)}</b>\n"
                     if hltb > 0:
                         text += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
                     rw, pn = info.get('game_reward', 0), info.get('game_penalty', 0)
@@ -1032,7 +1140,7 @@ class NassalMonitor:
 
             name, info = found
             gt = info.get('game_title', '')
-            emoji = "\U0001f3ae" if info.get('game_type') == 'game' else "\u26a1"
+            emoji = "\U0001f3ae" if info.get('game_type') == 'game' else "\U0001f4fa"
             text = f"{emoji} <b>{gt}</b>\nСтример: <b>{name}</b>\n\n"
 
             hltb_data = None
@@ -1281,12 +1389,107 @@ class NassalMonitor:
                         await self.send_notification(self._format_notification(changes))
                 if current_data:
                     self.previous_data = current_data
+                await self._check_event_notifications()
             except Exception as e:
                 logger.error(f"Error: {e}")
             await asyncio.sleep(10)
 
     def _format_notification(self, changes: list) -> str:
         return "<b>\U0001f514 ИЗМЕНЕНИЯ НА NASSAL.PRO</b>\n━━━━━━━━━━━━━━━━━━━━\n\n" + "\n\n".join(changes) + "\n\n━━━━━━━━━━━━━━━━━━━━"
+
+    async def _check_event_notifications(self):
+        now_msk = self._now_msk()
+        event_end = self._event_end_utc()
+        delta = event_end - datetime.now(timezone.utc)
+        total_sec = int(delta.total_seconds())
+
+        if total_sec <= 0:
+            key = self._get_notification_key("event_ended")
+            if key not in self.event_sent_notifications:
+                self.event_sent_notifications.add(key)
+                data = await self.get_participants_data()
+                if data:
+                    msg = self._build_leaderboard_table(data)
+                    header = "<b>\U0001f3c6 ИВЕНТ ЗАВЕРШЁН!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+                    await self.send_notification(header + msg + "\n\n━━━━━━━━━━━━━━━━━━━━")
+                    logger.info("Event ended notification sent")
+            return
+
+        now_hour = now_msk.hour
+        now_date = now_msk.date()
+        event_date = EVENT_END_MSK.date()
+
+        if now_date == event_date:
+            if now_hour == 18:
+                key = self._get_notification_key("last_hour", 18)
+                if key not in self.event_sent_notifications:
+                    self.event_sent_notifications.add(key)
+                    data = await self.get_participants_data()
+                    if data:
+                        msg = self._build_leaderboard_table(data)
+                        header = (
+                            "<b>\u23f0 \U0001f525 ПОСЛЕДНИЙ ЧАС!</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"\u23f0 До окончания ивента: <b>{self._format_countdown(delta)}</b>\n\n"
+                        )
+                        await self.send_notification(header + msg + "\n\n━━━━━━━━━━━━━━━━━━━━")
+                        logger.info("Last hour notification sent")
+            elif 0 <= now_hour < 18:
+                key = self._get_notification_key("hourly", now_hour)
+                if key not in self.event_sent_notifications:
+                    self.event_sent_notifications.add(key)
+                    data = await self.get_participants_data()
+                    if data:
+                        msg = self._build_leaderboard_table(data)
+                        header = (
+                            "<b>\U0001f552 ИВЕНТ — ФИНАЛЬНЫЙ ДЕНЬ</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"\u23f0 До окончания: <b>{self._format_countdown(delta)}</b>\n\n"
+                        )
+                        await self.send_notification(header + msg + "\n\n━━━━━━━━━━━━━━━━━━━━")
+                        logger.info(f"Hourly notification sent ({now_hour}:00)")
+        else:
+            event_day = event_date.day
+            days_left = (event_date - now_date).days
+            if now_hour == 19:
+                key = self._get_notification_key("daily_countdown", 19)
+                if key not in self.event_sent_notifications:
+                    self.event_sent_notifications.add(key)
+                    countdown_str = self._format_countdown(delta)
+                    if days_left == 1:
+                        text = (
+                            "<b>\U0001f514 НАПОМИНАНИЕ</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"\u26a0\ufe0f До окончания ивента остался <b>один день</b>!\n"
+                            f"\u23f0 Завтра в 19:00 (МСК) ивент завершается.\n"
+                            f"\U0001f4a1 Финальный день — последний шанс набрать очки!\n\n"
+                            "━━━━━━━━━━━━━━━━━━━━"
+                        )
+                    else:
+                        word_days = self._number_to_word(days_left) if days_left <= 20 else str(days_left)
+                        text = (
+                            "<b>\U0001f514 НАПОМИНАНИЕ</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"\u23f0 До окончания ивента: <b>{countdown_str}</b>\n"
+                            f"\U0001f4c5 Ивент завершается <b>{event_day} июня в 19:00 (МСК)</b>\n\n"
+                            "━━━━━━━━━━━━━━━━━━━━"
+                        )
+                    await self.send_notification(text)
+                    logger.info(f"Daily countdown sent ({days_left} days left)")
+
+    def _build_leaderboard_table(self, data: Dict) -> str:
+        leaderboard = self._get_leaderboard(data)
+        medals = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}
+        lines = []
+        for i, (name, info) in enumerate(leaderboard, 1):
+            pts = info['points']
+            pts_str = f"+{pts}" if pts > 0 else str(pts)
+            medal = medals.get(i, f"{i}.")
+            icon = "\U0001f7e2" if info.get('is_streaming', False) else "\U0001f534"
+            completed = info.get('completed', 0)
+            drops = info.get('drop_count', 0)
+            lines.append(f"{medal} <b>{name}</b> {icon}  \u2b50 {pts_str} | \u2705 {completed} | \u274c {drops}")
+        return "\n".join(lines)
 
     def compare_data(self, old_data: Dict, new_data: Dict) -> list:
         changes = []
@@ -1318,40 +1521,43 @@ class NassalMonitor:
         game_changes = []
         for name, nd in new_data.items():
             if name in old_data:
-                og, ng = old_data[name].get('game_title', ''), nd.get('game_title', '')
+                od = old_data[name]
+                og, ng = od.get('game_title', ''), nd.get('game_title', '')
                 if og != ng:
-                    old_drops = old_data[name].get('drop_count', 0)
+                    old_drops = od.get('drop_count', 0)
                     new_drops = nd.get('drop_count', 0)
+                    op, np_ = od.get('points', 0), nd.get('points', 0)
+                    pts_delta = np_ - op
+                    pts_str = f" ({'+' if pts_delta > 0 else ''}{pts_delta} очков)" if pts_delta != 0 else ""
+                    ot = od.get('game_type', '')
+                    nt = nd.get('game_type', '')
+                    is_video_old = ot not in ('game', '')
+                    is_video_new = nt not in ('game', '')
+                    is_video = is_video_old or is_video_new
+                    if is_video:
+                        act_start = "начал смотреть"
+                        act_done = "посмотрел"
+                        act_drop = "дропнул просмотр"
+                        prefix = "\U0001f4fa"
+                    else:
+                        act_start = "начал"
+                        act_done = "прошёл"
+                        act_drop = "дропнул"
+                        prefix = "\U0001f3ae"
                     if not og and ng:
-                        game_changes.append(f"\U0001f3ae <b>{name}</b> начал: <b>{ng}</b>")
+                        game_changes.append(f"{prefix} <b>{name}</b> {act_start}: <b>{ng}</b>")
                     elif og and not ng:
                         if new_drops > old_drops:
-                            game_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул: <b>{og}</b>")
+                            game_changes.append(f"\U0001f4a9 <b>{name}</b> {act_drop}: <b>{og}</b>{pts_str}")
                         else:
-                            game_changes.append(f"\u2705 <b>{name}</b> прошёл: <b>{og}</b>")
+                            game_changes.append(f"\u2705 <b>{name}</b> {act_done}: <b>{og}</b>{pts_str}")
                     elif og and ng:
                         if new_drops > old_drops:
-                            game_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул <b>{og}</b>, начал: <b>{ng}</b>")
+                            game_changes.append(f"\U0001f4a9 <b>{name}</b> {act_drop} <b>{og}</b>, {act_start}: <b>{ng}</b>{pts_str}")
                         else:
                             game_changes.append(f"\U0001f504 <b>{name}</b>: {og} \u2192 {ng}")
         if game_changes:
             changes.append("\U0001f3ae <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_changes))
-
-        timer_changes = []
-        for name, nd in new_data.items():
-            if name in old_data:
-                ot = old_data[name].get('timer_started', '')
-                nt = nd.get('timer_started', '')
-                if ot and not nt:
-                    acc_old = old_data[name].get('timer_accumulated', 0)
-                    el_old = acc_old + elapsed_since(ot)
-                    acc_new = nd.get('timer_accumulated', 0)
-                    el = max(el_old, acc_new)
-                    g = nd.get('game_title', '') or old_data[name].get('game_title', '?')
-                    if el > 0:
-                        timer_changes.append(f"\u23f9\ufe0f <b>{name}</b> завершил: <b>{g}</b> ({format_duration(el)})")
-        if timer_changes:
-            changes.append("\U0001f552 <b>ТАЙМЕРЫ:</b>\n\n" + "\n\n".join(timer_changes))
 
         review_changes = []
         for name, nd in new_data.items():
@@ -1360,9 +1566,7 @@ class NassalMonitor:
             od = old_data[name]
             old_review = od.get('player_review')
             new_review = nd.get('player_review')
-            old_auction = od.get('auction_id')
-            new_auction = nd.get('auction_id')
-            if new_review and (old_review is None or old_auction != new_auction):
+            if new_review and new_review != old_review:
                 game = nd.get('game_title', '') or od.get('game_title', '')
                 rating = nd.get('player_rating')
                 rating_str = f"{rating}/10" if rating is not None else ""
