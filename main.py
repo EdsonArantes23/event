@@ -95,12 +95,13 @@ class NassalMonitor:
         self.api_cache_time: float = 0
         self.API_CACHE_TTL = 15
         self.event_sent_notifications: set = set()
+        self.event_end_msk: datetime = EVENT_END_MSK
 
     def _now_msk(self) -> datetime:
         return datetime.now(timezone.utc) + MSK_OFFSET
 
     def _event_end_utc(self) -> datetime:
-        return EVENT_END_MSK.replace(tzinfo=timezone(timedelta(hours=3)))
+        return self.event_end_msk.replace(tzinfo=timezone(timedelta(hours=3)))
 
     def _time_until_event(self) -> timedelta:
         return self._event_end_utc() - datetime.now(timezone.utc)
@@ -136,7 +137,7 @@ class NassalMonitor:
 
     def _is_final_day(self) -> bool:
         now_msk = self._now_msk()
-        return now_msk.date() == EVENT_END_MSK.date()
+        return now_msk.date() == self.event_end_msk.date()
 
     def _get_notification_key(self, kind: str, hour: int = -1) -> str:
         now_msk = self._now_msk()
@@ -829,7 +830,7 @@ class NassalMonitor:
         async def cmd_help_event(message: types.Message):
             text = (
                 "<b>Команды бота:</b>\n\n"
-                "/event — статус ивента и обратный отсчёт\n"
+                "/event — статус ивента / установить время окончания\n"
                 "/status — статус всех стримеров\n"
                 "/rating — рейтинг\n"
                 "/points — таблица очков\n"
@@ -847,10 +848,47 @@ class NassalMonitor:
 
         @self.dp.message(Command("event"))
         async def cmd_event(message: types.Message):
+            args = message.text.split()[1:] if len(message.text.split()) > 1 else []
+
+            if args:
+                raw = " ".join(args)
+                parsed = None
+                formats = [
+                    "%d.%m.%Y %H:%M:%S",
+                    "%d.%m.%Y %H:%M",
+                    "%d.%m.%Y",
+                    "%d.%m %H:%M:%S",
+                    "%d.%m %H:%M",
+                ]
+                for fmt in formats:
+                    try:
+                        parsed = datetime.strptime(raw, fmt)
+                        break
+                    except ValueError:
+                        continue
+                if parsed is None:
+                    return await message.answer(
+                        "Неверный формат. Примеры:\n"
+                        "<code>/event 19.06.2026 19:00:00</code>\n"
+                        "<code>/event 19.06.2026 19:00</code>\n"
+                        "<code>/event 19.06.2026</code>\n"
+                        "<code>/event 20.06 14:30</code>",
+                        parse_mode="HTML"
+                    )
+                if parsed.year == 1900:
+                    parsed = parsed.replace(year=datetime.now().year)
+                self.event_end_msk = parsed
+                self.event_sent_notifications.clear()
+                event_str = self.event_end_msk.strftime("%d.%m.%Y %H:%M:%S")
+                return await message.answer(
+                    f"\u2705 Время окончания ивента установлено: <b>{event_str} (МСК)</b>",
+                    parse_mode="HTML"
+                )
+
             now_msk = self._now_msk()
             delta = self._time_until_event()
             total_sec = int(delta.total_seconds())
-            event_msk = EVENT_END_MSK.strftime("%d.%m.%Y в %H:%M (МСК)")
+            event_msk = self.event_end_msk.strftime("%d.%m.%Y в %H:%M:%S (МСК)")
             if total_sec <= 0:
                 text = (
                     "<b>\U0001f3c6 ИВЕНТ ЗАВЕРШЁН!</b>\n"
@@ -861,7 +899,7 @@ class NassalMonitor:
                 )
             else:
                 countdown = self._format_countdown(delta)
-                days_left = (EVENT_END_MSK.date() - now_msk.date()).days
+                days_left = (self.event_end_msk.date() - now_msk.date()).days
                 if days_left == 0:
                     status = "\U0001f525 <b>ФИНАЛЬНЫЙ ДЕНЬ!</b>"
                 elif days_left == 1:
@@ -876,12 +914,15 @@ class NassalMonitor:
                     f"{status}\n\n"
                     f"\U0001f4c5 Дата окончания: <b>{event_msk}</b>\n"
                     f"\u23f0 До окончания: <b>{countdown}</b>\n\n"
+                    f"<i>Установить время: /event 19.06.2026 19:00:00</i>\n\n"
                 )
                 if days_left <= 1:
+                    event_hour = self.event_end_msk.hour
+                    event_min = self.event_end_msk.minute
                     text += (
-                        f"\U0001f514 Авто-уведомления: <b>каждый час</b> (00:00–18:00)\n"
-                        f"\U0001f525 Последний час (18:00): <b>финальная таблица</b>\n"
-                        f"\U0001f3c6 Итоги (19:00): <b>финальная таблица + завершение</b>\n"
+                        f"\U0001f514 Авто-уведомления: <b>каждый час</b> (00:00–{event_hour - 1}:00)\n"
+                        f"\U0001f525 Последний час ({event_hour - 1}:00): <b>финальная таблица</b>\n"
+                        f"\U0001f3c6 Итоги ({event_hour}:{event_min:02d}): <b>финальная таблица + завершение</b>\n"
                     )
                 elif days_left <= 7:
                     text += f"\U0001f514 Ежедневное напоминание в <b>19:00 (МСК)</b>\n"
@@ -1417,11 +1458,13 @@ class NassalMonitor:
 
         now_hour = now_msk.hour
         now_date = now_msk.date()
-        event_date = EVENT_END_MSK.date()
+        event_date = self.event_end_msk.date()
+        event_hour = self.event_end_msk.hour
 
         if now_date == event_date:
-            if now_hour == 18:
-                key = self._get_notification_key("last_hour", 18)
+            last_hour = event_hour - 1
+            if now_hour == last_hour and last_hour >= 0:
+                key = self._get_notification_key("last_hour", last_hour)
                 if key not in self.event_sent_notifications:
                     self.event_sent_notifications.add(key)
                     data = await self.get_participants_data()
@@ -1434,7 +1477,7 @@ class NassalMonitor:
                         )
                         await self.send_notification(header + msg + "\n\n━━━━━━━━━━━━━━━━━━━━")
                         logger.info("Last hour notification sent")
-            elif 0 <= now_hour < 18:
+            elif 0 <= now_hour < last_hour:
                 key = self._get_notification_key("hourly", now_hour)
                 if key not in self.event_sent_notifications:
                     self.event_sent_notifications.add(key)
@@ -1450,18 +1493,24 @@ class NassalMonitor:
                         logger.info(f"Hourly notification sent ({now_hour}:00)")
         else:
             event_day = event_date.day
+            event_month = event_date.month
             days_left = (event_date - now_date).days
-            if now_hour == 19:
-                key = self._get_notification_key("daily_countdown", 19)
+            event_time_str = self.event_end_msk.strftime("%H:%M")
+            if now_hour == event_hour:
+                key = self._get_notification_key("daily_countdown", event_hour)
                 if key not in self.event_sent_notifications:
                     self.event_sent_notifications.add(key)
                     countdown_str = self._format_countdown(delta)
+                    month_names = {1: "января", 2: "февраля", 3: "марта", 4: "апреля",
+                                   5: "мая", 6: "июня", 7: "июля", 8: "августа",
+                                   9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"}
+                    month_name = month_names.get(event_month, str(event_month))
                     if days_left == 1:
                         text = (
                             "<b>\U0001f514 НАПОМИНАНИЕ</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━\n\n"
                             f"\u26a0\ufe0f До окончания ивента остался <b>один день</b>!\n"
-                            f"\u23f0 Завтра в 19:00 (МСК) ивент завершается.\n"
+                            f"\u23f0 Завтра в {event_time_str} (МСК) ивент завершается.\n"
                             f"\U0001f4a1 Финальный день — последний шанс набрать очки!\n\n"
                             "━━━━━━━━━━━━━━━━━━━━"
                         )
@@ -1471,7 +1520,7 @@ class NassalMonitor:
                             "<b>\U0001f514 НАПОМИНАНИЕ</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━\n\n"
                             f"\u23f0 До окончания ивента: <b>{countdown_str}</b>\n"
-                            f"\U0001f4c5 Ивент завершается <b>{event_day} июня в 19:00 (МСК)</b>\n\n"
+                            f"\U0001f4c5 Ивент завершается <b>{event_day} {month_name} в {event_time_str} (МСК)</b>\n\n"
                             "━━━━━━━━━━━━━━━━━━━━"
                         )
                     await self.send_notification(text)
