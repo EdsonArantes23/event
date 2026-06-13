@@ -1575,11 +1575,6 @@ class NassalMonitor:
                             game_changes.append(f"\U0001f4a9 <b>{name}</b> {act_drop}: <b>{og}</b>{pts_str}")
                         else:
                             game_changes.append(f"\u2705 <b>{name}</b> {act_done}: <b>{og}</b>{pts_str}")
-                    elif og and ng:
-                        if new_drops > old_drops:
-                            game_changes.append(f"\U0001f4a9 <b>{name}</b> {act_drop} <b>{og}</b>, {act_start}: <b>{ng}</b>{pts_str}")
-                        else:
-                            game_changes.append(f"\U0001f504 <b>{name}</b>: {og} \u2192 {ng}")
         if game_changes:
             changes.append("\U0001f3ae <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_changes))
 
@@ -1594,9 +1589,8 @@ class NassalMonitor:
                 game = nd.get('game_title', '') or od.get('game_title', '')
                 rating = nd.get('player_rating')
                 rating_str = f"{rating}/10" if rating is not None else ""
-                review_text = new_review if len(new_review) <= 500 else new_review[:500] + "..."
                 emoji = "\u2705" if rating and rating >= 5 else "\u274c"
-                line = f"{emoji} <b>{name}</b> оставил рецензию на <b>{game}</b> [{rating_str}]:\n\n<i>{review_text}</i>"
+                line = f"{emoji} <b>{name}</b> оставил рецензию на <b>{game}</b> [{rating_str}]:\n\n<i>{new_review}</i>"
                 review_changes.append(line)
         if review_changes:
             changes.append("\U0001f4dd <b>РЕЦЕНЗИИ:</b>\n\n" + "\n\n".join(review_changes))
