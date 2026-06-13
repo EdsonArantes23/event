@@ -843,7 +843,7 @@ class NassalMonitor:
         async def cmd_help_event(message: types.Message):
             text = (
                 "<b>Команды бота:</b>\n\n"
-                "/event — статус ивента / установить время окончания\n"
+                "/event — статус ивента и обратный отсчёт\n"
                 "/status — статус всех стримеров\n"
                 "/rating — рейтинг\n"
                 "/points — таблица очков\n"
@@ -861,43 +861,6 @@ class NassalMonitor:
 
         @self.dp.message(Command("event"))
         async def cmd_event(message: types.Message):
-            args = message.text.split()[1:] if len(message.text.split()) > 1 else []
-
-            if args:
-                raw = " ".join(args)
-                parsed = None
-                formats = [
-                    "%d.%m.%Y %H:%M:%S",
-                    "%d.%m.%Y %H:%M",
-                    "%d.%m.%Y",
-                    "%d.%m %H:%M:%S",
-                    "%d.%m %H:%M",
-                ]
-                for fmt in formats:
-                    try:
-                        parsed = datetime.strptime(raw, fmt)
-                        break
-                    except ValueError:
-                        continue
-                if parsed is None:
-                    return await message.answer(
-                        "Неверный формат. Примеры:\n"
-                        "<code>/event 19.06.2026 19:00:00</code>\n"
-                        "<code>/event 19.06.2026 19:00</code>\n"
-                        "<code>/event 19.06.2026</code>\n"
-                        "<code>/event 20.06 14:30</code>",
-                        parse_mode="HTML"
-                    )
-                if parsed.year == 1900:
-                    parsed = parsed.replace(year=datetime.now().year)
-                self.event_end_msk = parsed
-                self.event_sent_notifications.clear()
-                event_str = self.event_end_msk.strftime("%d.%m.%Y %H:%M:%S")
-                return await message.answer(
-                    f"\u2705 Время окончания ивента установлено: <b>{event_str} (МСК)</b>",
-                    parse_mode="HTML"
-                )
-
             now_msk = self._now_msk()
             delta = self._time_until_event()
             total_sec = int(delta.total_seconds())
@@ -927,7 +890,6 @@ class NassalMonitor:
                     f"{status}\n\n"
                     f"\U0001f4c5 Дата окончания: <b>{event_msk}</b>\n"
                     f"\u23f0 До окончания: <b>{countdown}</b>\n\n"
-                    f"<i>Установить время: /event 19.06.2026 19:00:00</i>\n\n"
                 )
                 if days_left <= 1:
                     event_hour = self.event_end_msk.hour
