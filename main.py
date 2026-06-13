@@ -1585,6 +1585,7 @@ class NassalMonitor:
             changes.append("\U0001f4dd <b>РЕЦЕНЗИИ:</b>\n\n" + "\n\n".join(review_changes))
 
         action_changes = []
+        game_start_changes = []
         for name, nd in new_data.items():
             if name not in old_data:
                 continue
@@ -1621,7 +1622,10 @@ class NassalMonitor:
             old_timer = od.get('timer_started', '')
             new_timer = nd.get('timer_started', '')
             if not old_timer and new_timer and new_game:
-                action_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
+                if old_game:
+                    game_start_changes.append(f"\U0001f3ae <b>{name}</b> продолжил играть: <b>{new_game}</b>")
+                else:
+                    game_start_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
 
             if old_game and not new_game:
                 od_drops = od.get('drop_count', 0)
@@ -1632,6 +1636,9 @@ class NassalMonitor:
                     action_changes.append(f"\u2705 <b>{name}</b> прошёл: <b>{old_game}</b>")
 
 
+
+        if game_start_changes:
+            changes.append("\U0001f3ae <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_start_changes))
 
         if action_changes:
             changes.append("\U0001f3af <b>АУКЦИОН / РУЛЕТКА:</b>\n\n" + "\n\n".join(action_changes))
