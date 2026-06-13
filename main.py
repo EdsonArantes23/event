@@ -1595,6 +1595,56 @@ class NassalMonitor:
         if review_changes:
             changes.append("\U0001f4dd <b>РЕЦЕНЗИИ:</b>\n\n" + "\n\n".join(review_changes))
 
+        action_changes = []
+        for name, nd in new_data.items():
+            if name not in old_data:
+                continue
+            od = old_data[name]
+            old_action = od.get('action_kind', '')
+            new_action = nd.get('action_kind', '')
+            old_auction_status = od.get('auction_status', '')
+            new_auction_status = nd.get('auction_status', '')
+            old_game = od.get('game_title', '')
+            new_game = nd.get('game_title', '')
+
+            if old_action != new_action:
+                if new_action == 'auction' and old_action != 'auction':
+                    action_changes.append(f"\U0001f3af <b>{name}</b> проводит аукцион")
+                elif new_action and new_action != 'auction' and old_action == 'auction':
+                    action_changes.append(f"\U0001f3af <b>{name}</b> завершил аукцион")
+                    action_changes.append(f"\U0001f3b1 <b>{name}</b> крутит колесо")
+                elif new_action and new_action != 'auction' and old_action != 'auction':
+                    action_changes.append(f"\U0001f3b1 <b>{name}</b> крутит колесо")
+                elif not new_action and old_action:
+                    if old_action == 'auction':
+                        action_changes.append(f"\U0001f3af <b>{name}</b> завершил аукцион")
+                    else:
+                        action_changes.append(f"\U0001f3b1 <b>{name}</b> завершил рулетку")
+
+            if new_auction_status and new_auction_status != old_auction_status:
+                if new_auction_status == 'start':
+                    action_changes.append(f"\U0001f3af <b>{name}</b>: аукцион начался")
+                elif new_auction_status == 'timer':
+                    action_changes.append(f"\u23f0 <b>{name}</b>: торги идут")
+                elif new_auction_status == 'finish':
+                    action_changes.append(f"\U0001f3c6 <b>{name}</b>: аукцион завершён")
+
+            old_timer = od.get('timer_started', '')
+            new_timer = nd.get('timer_started', '')
+            if not old_timer and new_timer and new_game:
+                action_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
+
+            if old_game and not new_game:
+                od_drops = od.get('drop_count', 0)
+                nd_drops = nd.get('drop_count', 0)
+                if nd_drops > od_drops:
+                    action_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул: <b>{old_game}</b>")
+                elif not new_action:
+                    action_changes.append(f"\u2705 <b>{name}</b> прошёл: <b>{old_game}</b>")
+
+        if action_changes:
+            changes.append("\U0001f3af <b>АУКЦИОН / РУЛЕТКА:</b>\n\n" + "\n\n".join(action_changes))
+
         return changes
 
 
