@@ -967,7 +967,10 @@ class NassalMonitor:
             except Exception as e:
                 logger.error(f"/status error: {e}", exc_info=True)
                 try:
-                    await message.answer("Ошибка при получении статуса")
+                    if self.is_admin(message.from_user.id):
+                        await message.answer(f"Ошибка: {e}")
+                    else:
+                        await message.answer("Ошибка при получении статуса")
                 except Exception:
                     pass
 
