@@ -916,53 +916,60 @@ class NassalMonitor:
 
         @self.dp.message(Command("status"))
         async def cmd_status(message: types.Message):
-            await message.answer("Получаю статусы...")
-            data = await self.get_participants_data()
-            if not data:
-                return await message.answer("Не удалось")
-            leaderboard = self._get_leaderboard(data)
-            text = "<b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-            for name, info in leaderboard:
-                pos = self._get_real_position(data, name)
-                pts = info['points']
-                pts_str = f"+{pts}" if pts > 0 else str(pts)
-                icon = self._format_streaming_status_short(info.get('is_streaming', False), info.get('streaming_platforms', []))
+            try:
+                await message.answer("Получаю статусы...")
+                data = await self.get_participants_data()
+                if not data:
+                    return await message.answer("Не удалось получить данные с API")
+                leaderboard = self._get_leaderboard(data)
+                text = "<b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+                for name, info in leaderboard:
+                    pos = self._get_real_position(data, name)
+                    pts = info['points']
+                    pts_str = f"+{pts}" if pts > 0 else str(pts)
+                    icon = self._format_streaming_status_short(info.get('is_streaming', False), info.get('streaming_platforms', []))
 
-                game = info.get('game_title', '')
-                ts = info.get('timer_started', '')
-                hltb = info.get('hltb_seconds', 0)
-                action = info.get('action_kind', '')
+                    game = info.get('game_title', '')
+                    ts = info.get('timer_started', '')
+                    hltb = info.get('hltb_seconds', 0)
+                    action = info.get('action_kind', '')
 
-                text += f"<b>{name}</b> {icon}  \U0001f3c6 {pos} | \u2b50 {pts_str}\n"
+                    text += f"<b>{name}</b> {icon}  \U0001f3c6 {pos} | \u2b50 {pts_str}\n"
 
-                if game:
-                    game_type = info.get('game_type', '')
-                    game_icon = "\U0001f3ae" if game_type == 'game' else "\U0001f4fa"
-                    timer_label = "Играет" if game_type == 'game' else "Смотрит"
-                    text += f"  {game_icon} {game}\n"
-                    if hltb > 0:
-                        text += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
-                    if ts:
-                        el = info.get('timer_accumulated', 0) + elapsed_since(ts)
-                        text += f"  \u23f1 {timer_label}: {format_duration(el)}\n"
-                    elif info.get('timer_accumulated', 0) > 0:
-                        text += f"  \u23f1 На паузе: {format_duration(info.get('timer_accumulated', 0))}\n"
-                    rw, pn = info.get('game_reward', 0), info.get('game_penalty', 0)
-                    if rw or pn:
-                        text += f"  \U0001f4b0 +{rw} / -{pn}\n"
-                    text += "\n"
-                elif action and action == 'auction':
-                    text += f"  \U0001f3af Аукцион\n\n"
-                elif info.get('casino_phase'):
-                    text += f"  \U0001f3b0 В казино\n\n"
-                elif action and action != 'none':
-                    text += f"  \U0001f3b1 Крутит колесо\n\n"
-                else:
-                    text += f"  \u26aa Ожидание\n\n"
+                    if game:
+                        game_type = info.get('game_type', '')
+                        game_icon = "\U0001f3ae" if game_type == 'game' else "\U0001f4fa"
+                        timer_label = "Играет" if game_type == 'game' else "Смотрит"
+                        text += f"  {game_icon} {game}\n"
+                        if hltb > 0:
+                            text += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
+                        if ts:
+                            el = info.get('timer_accumulated', 0) + elapsed_since(ts)
+                            text += f"  \u23f1 {timer_label}: {format_duration(el)}\n"
+                        elif info.get('timer_accumulated', 0) > 0:
+                            text += f"  \u23f1 На паузе: {format_duration(info.get('timer_accumulated', 0))}\n"
+                        rw, pn = info.get('game_reward', 0), info.get('game_penalty', 0)
+                        if rw or pn:
+                            text += f"  \U0001f4b0 +{rw} / -{pn}\n"
+                        text += "\n"
+                    elif action and action == 'auction':
+                        text += f"  \U0001f3af Аукцион\n\n"
+                    elif info.get('casino_phase'):
+                        text += f"  \U0001f3b0 В казино\n\n"
+                    elif action and action != 'none':
+                        text += f"  \U0001f3b1 Крутит колесо\n\n"
+                    else:
+                        text += f"  \u26aa Ожидание\n\n"
 
-            text += "━━━━━━━━━━━━━━━━━━━━\n\U0001f7e2 — онлайн | \U0001f534 — оффлайн"
-            for i in range(0, len(text), 4000):
-                await message.answer(text[i:i+4000], parse_mode="HTML")
+                text += "━━━━━━━━━━━━━━━━━━━━\n\U0001f7e2 — онлайн | \U0001f534 — оффлайн"
+                for i in range(0, len(text), 4000):
+                    await message.answer(text[i:i+4000], parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"/status error: {e}", exc_info=True)
+                try:
+                    await message.answer("Ошибка при получении статуса")
+                except Exception:
+                    pass
 
         @self.dp.message(Command("list"))
         async def cmd_list(message: types.Message):
