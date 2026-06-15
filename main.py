@@ -931,7 +931,7 @@ class NassalMonitor:
 
                     game = info.get('game_title', '')
                     ts = info.get('timer_started', '')
-                    hltb = info.get('hltb_seconds', 0)
+                    hltb = info.get('hltb_seconds', 0) or 0
                     action = info.get('action_kind', '')
 
                     text += f"<b>{name}</b> {icon}  \U0001f3c6 {pos} | \u2b50 {pts_str}\n"
@@ -944,10 +944,10 @@ class NassalMonitor:
                         if hltb > 0:
                             text += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
                         if ts:
-                            el = info.get('timer_accumulated', 0) + elapsed_since(ts)
+                            el = (info.get('timer_accumulated', 0) or 0) + elapsed_since(ts)
                             text += f"  \u23f1 {timer_label}: {format_duration(el)}\n"
-                        elif info.get('timer_accumulated', 0) > 0:
-                            text += f"  \u23f1 На паузе: {format_duration(info.get('timer_accumulated', 0))}\n"
+                        elif (info.get('timer_accumulated', 0) or 0) > 0:
+                            text += f"  \u23f1 На паузе: {format_duration(info.get('timer_accumulated', 0) or 0)}\n"
                         rw, pn = info.get('game_reward', 0), info.get('game_penalty', 0)
                         if rw or pn:
                             text += f"  \U0001f4b0 +{rw} / -{pn}\n"
