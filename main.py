@@ -543,7 +543,7 @@ class NassalMonitor:
 
             info = data[streamer_name]
             real_position = self._get_real_position(data, streamer_name)
-            points = info['points']
+            points = info.get('points', 0) or 0
             points_str = f"+{points}" if points > 0 else str(points)
 
             msg = f"\U0001f464 <b>{streamer_name}</b>\n"
@@ -925,8 +925,8 @@ class NassalMonitor:
                 text = "<b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
                 for name, info in leaderboard:
                     pos = self._get_real_position(data, name)
-                    pts = info['points']
-                    pts_str = f"+{pts}" if pts > 0 else str(pts)
+                pts = info.get('points', 0) or 0
+                pts_str = f"+{pts}" if pts > 0 else str(pts)
                     icon = self._format_streaming_status_short(info.get('is_streaming', False), info.get('streaming_platforms', []))
 
                     game = info.get('game_title', '')
@@ -1010,7 +1010,7 @@ class NassalMonitor:
                 return await message.answer("Не удалось")
             text = "<b>ОЧКИ</b>\n━━━━━━━━━━━━\n\n"
             for i, (name, info) in enumerate(self._get_leaderboard(data), 1):
-                pts = info['points']
+                pts = info.get('points', 0) or 0
                 pts_str = f"+{pts}" if pts > 0 else str(pts)
                 text += f"{i}. <b>{name}</b> — {pts_str}\n"
             await message.answer(text, parse_mode="HTML")
@@ -1248,7 +1248,7 @@ class NassalMonitor:
                 return await message.answer("Данные не найдены")
             info = data[name]
             pos = self._get_real_position(data, name)
-            pts = info['points']
+            pts = info.get('points', 0) or 0
             pts_str = f"+{pts}" if pts > 0 else str(pts)
             text = f"<b>\U0001f4ca СТАТИСТИКА: {name}</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
             text += f"\U0001f3c6 Место: {pos} из {len(data)}\n\u2b50 Очки: {pts_str}\n\n"
@@ -1381,7 +1381,7 @@ class NassalMonitor:
             medals = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}
             text = "<b>\U0001f3c6 ТОП NASSAL</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             for i, (name, info) in enumerate(self._get_leaderboard(data), 1):
-                pts = info['points']
+                pts = info.get('points', 0) or 0
                 pts_str = f"+{pts}" if pts > 0 else str(pts)
                 medal = medals.get(i, f"{i}.")
                 icon = "\U0001f7e2" if info.get('is_streaming', False) else "\U0001f534"
@@ -1529,9 +1529,9 @@ class NassalMonitor:
         medals = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}
         lines = []
         for i, (name, info) in enumerate(leaderboard, 1):
-            pts = info['points']
-            pts_str = f"+{pts}" if pts > 0 else str(pts)
-            medal = medals.get(i, f"{i}.")
+                pts = info.get('points', 0) or 0
+                pts_str = f"+{pts}" if pts > 0 else str(pts)
+                medal = medals.get(i, f"{i}.")
             icon = "\U0001f7e2" if info.get('is_streaming', False) else "\U0001f534"
             completed = info.get('completed', 0)
             drops = info.get('drop_count', 0)
