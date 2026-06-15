@@ -1573,10 +1573,12 @@ class NassalMonitor:
                         if not og and ng:
                             game_changes.append(f"\U0001f4fa <b>{name}</b> начал смотреть: <b>{ng}</b>")
                         elif og and not ng:
-                            if new_drops > old_drops:
-                                game_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул просмотр: <b>{og}</b>{pts_str}")
-                            else:
+                            old_pts = od.get('points', 0)
+                            new_pts = nd.get('points', 0)
+                            if new_pts > old_pts:
                                 game_changes.append(f"\u2705 <b>{name}</b> посмотрел: <b>{og}</b>{pts_str}")
+                            else:
+                                game_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул просмотр: <b>{og}</b>{pts_str}")
         if game_changes:
             changes.append("\U0001f4fa <b>ВИДЕО:</b>\n\n" + "\n\n".join(game_changes))
 
@@ -1635,20 +1637,15 @@ class NassalMonitor:
             old_timer = od.get('timer_started', '')
             new_timer = nd.get('timer_started', '')
             if not old_timer and new_timer and new_game:
-                if old_game and old_game != new_game:
-                    game_start_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
-                elif not old_game:
-                    game_start_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
-                else:
-                    game_start_changes.append(f"\U0001f3ae <b>{name}</b> продолжил играть: <b>{new_game}</b>")
+                game_start_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
 
             if old_game and not new_game:
-                od_drops = od.get('drop_count', 0)
-                nd_drops = nd.get('drop_count', 0)
-                if nd_drops > od_drops:
-                    action_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул: <b>{old_game}</b>")
-                else:
+                old_pts = od.get('points', 0)
+                new_pts = nd.get('points', 0)
+                if new_pts > old_pts:
                     action_changes.append(f"\u2705 <b>{name}</b> прошёл: <b>{old_game}</b>")
+                else:
+                    action_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул: <b>{old_game}</b>")
 
 
 
