@@ -925,8 +925,8 @@ class NassalMonitor:
                 text = "<b>СТАТУС ВСЕХ СТРИМЕРОВ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
                 for name, info in leaderboard:
                     pos = self._get_real_position(data, name)
-                pts = info.get('points', 0) or 0
-                pts_str = f"+{pts}" if pts > 0 else str(pts)
+                    pts = info.get('points', 0) or 0
+                    pts_str = f"+{pts}" if pts > 0 else str(pts)
                     icon = self._format_streaming_status_short(info.get('is_streaming', False), info.get('streaming_platforms', []))
 
                     game = info.get('game_title', '')
@@ -1529,9 +1529,9 @@ class NassalMonitor:
         medals = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}
         lines = []
         for i, (name, info) in enumerate(leaderboard, 1):
-                pts = info.get('points', 0) or 0
-                pts_str = f"+{pts}" if pts > 0 else str(pts)
-                medal = medals.get(i, f"{i}.")
+            pts = info.get('points', 0) or 0
+            pts_str = f"+{pts}" if pts > 0 else str(pts)
+            medal = medals.get(i, f"{i}.")
             icon = "\U0001f7e2" if info.get('is_streaming', False) else "\U0001f534"
             completed = info.get('completed', 0)
             drops = info.get('drop_count', 0)
