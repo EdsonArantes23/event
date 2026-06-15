@@ -1635,17 +1635,19 @@ class NassalMonitor:
             old_timer = od.get('timer_started', '')
             new_timer = nd.get('timer_started', '')
             if not old_timer and new_timer and new_game:
-                if old_game:
-                    game_start_changes.append(f"\U0001f3ae <b>{name}</b> продолжил играть: <b>{new_game}</b>")
-                else:
+                if old_game and old_game != new_game:
                     game_start_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
+                elif not old_game:
+                    game_start_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
+                else:
+                    game_start_changes.append(f"\U0001f3ae <b>{name}</b> продолжил играть: <b>{new_game}</b>")
 
             if old_game and not new_game:
                 od_drops = od.get('drop_count', 0)
                 nd_drops = nd.get('drop_count', 0)
                 if nd_drops > od_drops:
                     action_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул: <b>{old_game}</b>")
-                elif not new_action:
+                else:
                     action_changes.append(f"\u2705 <b>{name}</b> прошёл: <b>{old_game}</b>")
 
 
