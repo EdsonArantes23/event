@@ -1619,6 +1619,8 @@ class NassalMonitor:
             new_auction_status = nd.get('auction_status', '')
             old_game = od.get('game_title', '')
             new_game = nd.get('game_title', '')
+            old_game_type = od.get('game_type', 'game')
+            new_game_type = nd.get('game_type', 'game')
             old_casino = od.get('casino_phase')
             new_casino = nd.get('casino_phase')
             in_casino = bool(new_casino)
@@ -1643,10 +1645,11 @@ class NassalMonitor:
 
             old_timer = od.get('timer_started', '')
             new_timer = nd.get('timer_started', '')
-            if not old_timer and new_timer and new_game:
+            is_game = old_game_type == 'game' or new_game_type == 'game'
+            if not old_timer and new_timer and new_game and is_game:
                 game_start_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
 
-            if old_game and not new_game:
+            if old_game and not new_game and old_game_type == 'game':
                 old_pts = od.get('points', 0)
                 new_pts = nd.get('points', 0)
                 if new_pts > old_pts:
