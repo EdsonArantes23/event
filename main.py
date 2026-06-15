@@ -1648,8 +1648,9 @@ class NassalMonitor:
 
             old_timer = od.get('timer_started', '')
             new_timer = nd.get('timer_started', '')
+            new_accumulated = nd.get('timer_accumulated', 0)
             is_game = old_game_type == 'game' or new_game_type == 'game'
-            if not old_timer and new_timer and new_game and is_game:
+            if not old_timer and new_timer and new_game and is_game and new_accumulated == 0:
                 game_start_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
 
             if old_game and not new_game and old_game_type == 'game':
