@@ -1550,7 +1550,6 @@ class NassalMonitor:
         pts_changes = []
         pos_changes = []
         casino_changes = []
-        casino_pts_changes = []
         action_changes = []
 
         for name, nd in new_data.items():
@@ -1654,10 +1653,6 @@ class NassalMonitor:
                 if new_casino and not old_casino:
                     casino_changes.append(f"\U0001f3b0 <b>{name}</b> зашёл в казино")
 
-            if in_casino and pts_delta != 0:
-                em = "\U0001f49a" if pts_delta > 0 else "\U0001f494"
-                casino_pts_changes.append(f"{em} <b>{name}</b>: {op} \u2192 {np_} ({'+' if pts_delta>0 else ''}{pts_delta})")
-
             if new_auction_status and new_auction_status != old_auction_status:
                 if new_auction_status == 'start':
                     action_changes.append(f"\U0001f3af <b>{name}</b>: аукцион начался")
@@ -1702,9 +1697,6 @@ class NassalMonitor:
 
         if casino_changes:
             changes.append("\U0001f3b0 <b>КАЗИНО:</b>\n\n" + "\n\n".join(casino_changes))
-
-        if casino_pts_changes:
-            changes.append("\U0001f3b2 <b>БАЛЛЫ КАЗИНО:</b>\n\n" + "\n\n".join(casino_pts_changes))
 
         return changes
 
