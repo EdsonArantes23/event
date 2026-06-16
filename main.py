@@ -1423,7 +1423,7 @@ class NassalMonitor:
                 self.api_cache = None
                 current_data = await self.get_participants_data()
                 if current_data and self.previous_data:
-                    changes = self.compare_data(self.previous_data, current_data)
+                    changes = await self.compare_data(self.previous_data, current_data)
                     if changes:
                         await self.send_notification(self._format_notification(changes))
                 if current_data:
@@ -1538,95 +1538,147 @@ class NassalMonitor:
             lines.append(f"{medal} <b>{name}</b> {icon}  \u2b50 {pts_str} | \u2705 {completed} | \u274c {drops}")
         return "\n".join(lines)
 
-    def compare_data(self, old_data: Dict, new_data: Dict) -> list:
+    async def compare_data(self, old_data: Dict, new_data: Dict) -> list:
         changes = []
         old_pos = {n: i for i, (n, _) in enumerate(self._get_leaderboard(old_data), 1)}
         new_pos = {n: i for i, (n, _) in enumerate(self._get_leaderboard(new_data), 1)}
 
+        game_end_changes = []
+        game_start_changes = []
+        video_changes = []
+        review_changes = []
+        pts_changes = []
         pos_changes = []
-        for name in new_data:
+        casino_changes = []
+        casino_pts_changes = []
+        action_changes = []
+
+        for name, nd in new_data.items():
+            if name not in old_data:
+                continue
+            od = old_data[name]
+            old_game = od.get('game_title', '')
+            new_game = nd.get('game_title', '')
+            old_game_type = od.get('game_type', 'game')
+            new_game_type = nd.get('game_type', 'game')
+            old_timer = od.get('timer_started', '')
+            new_timer = nd.get('timer_started', '')
+            new_accumulated = nd.get('timer_accumulated', 0)
+            old_action = od.get('action_kind', '')
+            new_action = nd.get('action_kind', '')
+            old_auction_status = od.get('auction_status', '')
+            new_auction_status = nd.get('auction_status', '')
+            old_casino = od.get('casino_phase')
+            new_casino = nd.get('casino_phase')
+            in_casino = bool(new_casino)
+
+            op, np_ = od.get('points', 0), nd.get('points', 0)
+            pts_delta = np_ - op
+
+            is_video = old_game_type not in ('game', '') or new_game_type not in ('game', '')
+
+            if is_video:
+                if not old_game and new_game:
+                    hltb_v = nd.get('hltb_seconds', 0)
+                    hltb_id_v = nd.get('hltb_game_id')
+                    year_v = nd.get('release_year')
+                    line_v = f"\U0001f4fa <b>{name}</b> начал смотреть: <b>{new_game}</b>"
+                    if year_v:
+                        line_v += f" ({year_v})"
+                    line_v += "\n"
+                    if hltb_v > 0:
+                        if hltb_id_v:
+                            line_v += f"  \U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_id_v}'>{format_duration(hltb_v)}</a>\n"
+                        else:
+                            line_v += f"  \U0001f552 HLTB: {format_duration(hltb_v)}\n"
+                    video_changes.append(line_v)
+                elif old_game and not new_game:
+                    elapsed_v = od.get('timer_accumulated', 0)
+                    if old_timer:
+                        elapsed_v += elapsed_since(old_timer)
+                    hltb_v = od.get('hltb_seconds', 0)
+                    hltb_id_v = od.get('hltb_game_id')
+                    if pts_delta > 0:
+                        line_v = f"\u2705 <b>{name}</b> посмотрел: <b>{old_game}</b>"
+                    else:
+                        line_v = f"\U0001f4a9 <b>{name}</b> дропнул просмотр: <b>{old_game}</b>"
+                    line_v += "\n"
+                    if elapsed_v > 0:
+                        line_v += f"  \u23f1 Время: {format_duration(elapsed_v)}\n"
+                    if hltb_v > 0:
+                        if hltb_id_v:
+                            line_v += f"  \U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_id_v}'>{format_duration(hltb_v)}</a>\n"
+                        else:
+                            line_v += f"  \U0001f552 HLTB: {format_duration(hltb_v)}\n"
+                    video_changes.append(line_v)
+            else:
+                if not old_timer and new_timer and new_game and new_accumulated == 0:
+                    hltb = nd.get('hltb_seconds', 0)
+                    reward = nd.get('game_reward', 0)
+                    penalty = nd.get('game_penalty', 0)
+                    year = nd.get('release_year')
+                    review = nd.get('review_score')
+                    hltb_id = nd.get('hltb_game_id')
+                    steam_id = nd.get('steam_app_id')
+
+                    line = f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>"
+                    if year:
+                        line += f" ({year})"
+                    line += "\n"
+                    if review is not None:
+                        emoji_r = "\U0001f44d" if review >= 75 else ("\U0001f914" if review >= 50 else "\U0001f44e")
+                        line += f"  {emoji_r} Оценка: {review}/100\n"
+                    if hltb > 0:
+                        if hltb_id:
+                            line += f"  \U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_id}'>{format_duration(hltb)}</a>\n"
+                        else:
+                            line += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
+                    if steam_id:
+                        line += f"  \u2699\ufe0f Steam: <a href='https://store.steampowered.com/app/{steam_id}'>магазин</a>\n"
+                    if reward or penalty:
+                        line += f"  \U0001f4b0 +{reward} / \U0001f494 -{penalty}\n"
+                    game_start_changes.append(line)
+
+                if old_game and not new_game and old_game_type == 'game':
+                    elapsed = od.get('timer_accumulated', 0)
+                    if old_timer:
+                        elapsed += elapsed_since(old_timer)
+                    hltb = od.get('hltb_seconds', 0)
+                    hltb_id = od.get('hltb_game_id')
+
+                    if pts_delta > 0:
+                        line = f"\u2705 <b>{name}</b> прошёл: <b>{old_game}</b>"
+                    else:
+                        line = f"\U0001f4a9 <b>{name}</b> дропнул: <b>{old_game}</b>"
+                    line += "\n"
+                    if elapsed > 0:
+                        line += f"  \u23f1 Время: {format_duration(elapsed)}\n"
+                    if hltb > 0:
+                        if hltb_id:
+                            line += f"  \U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_id}'>{format_duration(hltb)}</a>\n"
+                        else:
+                            line += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
+                    game_end_changes.append(line)
+
+            if pts_delta != 0:
+                d = pts_delta
+                em = "\U0001f49a" if d > 0 else "\U0001f494"
+                pts_changes.append(f"{em} <b>{name}</b>: {op} \u2192 {np_} ({'+' if d>0 else ''}{d})")
+
             if name in old_pos and name in new_pos and old_pos[name] != new_pos[name]:
                 diff = old_pos[name] - new_pos[name]
                 if diff > 0:
                     pos_changes.append(f"\U0001f680 <b>{name}</b>: {old_pos[name]} \u2192 {new_pos[name]} (поднялся на {self._number_to_word(diff)} {self._get_position_word(diff)})")
                 else:
                     pos_changes.append(f"\U0001f4c9 <b>{name}</b>: {old_pos[name]} \u2192 {new_pos[name]} (упал на {self._number_to_word(abs(diff))} {self._get_position_word(abs(diff))})")
-        if pos_changes:
-            changes.append("\U0001f4ca <b>ПОЗИЦИИ:</b>\n\n" + "\n\n".join(pos_changes))
 
-        pts_changes = []
-        for name, nd in new_data.items():
-            if name in old_data:
-                op, np_ = old_data[name].get('points', 0), nd.get('points', 0)
-                if op != np_:
-                    d = np_ - op
-                    em = "\U0001f49a" if d > 0 else "\U0001f494"
-                    pts_changes.append(f"{em} <b>{name}</b>: {op} \u2192 {np_} ({'+' if d>0 else ''}{d})")
-        if pts_changes:
-            changes.append("\U0001f4b0 <b>ОЧКИ:</b>\n\n" + "\n\n".join(pts_changes))
+            if new_casino != old_casino:
+                if new_casino and not old_casino:
+                    casino_changes.append(f"\U0001f3b0 <b>{name}</b> зашёл в казино")
 
-        game_changes = []
-        for name, nd in new_data.items():
-            if name in old_data:
-                od = old_data[name]
-                og, ng = od.get('game_title', ''), nd.get('game_title', '')
-                if og != ng:
-                    old_drops = od.get('drop_count', 0)
-                    new_drops = nd.get('drop_count', 0)
-                    op, np_ = od.get('points', 0), nd.get('points', 0)
-                    pts_delta = np_ - op
-                    pts_str = f" ({'+' if pts_delta > 0 else ''}{pts_delta} очков)" if pts_delta != 0 else ""
-                    ot = od.get('game_type', '')
-                    nt = nd.get('game_type', '')
-                    is_video = ot not in ('game', '') or nt not in ('game', '')
-                    if is_video:
-                        if not og and ng:
-                            game_changes.append(f"\U0001f4fa <b>{name}</b> начал смотреть: <b>{ng}</b>")
-                        elif og and not ng:
-                            old_pts = od.get('points', 0)
-                            new_pts = nd.get('points', 0)
-                            if new_pts > old_pts:
-                                game_changes.append(f"\u2705 <b>{name}</b> посмотрел: <b>{og}</b>{pts_str}")
-                            else:
-                                game_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул просмотр: <b>{og}</b>{pts_str}")
-        if game_changes:
-            changes.append("\U0001f4fa <b>ВИДЕО:</b>\n\n" + "\n\n".join(game_changes))
-
-        review_changes = []
-        for name, nd in new_data.items():
-            if name not in old_data:
-                continue
-            od = old_data[name]
-            old_review = od.get('player_review')
-            new_review = nd.get('player_review')
-            if new_review and new_review != old_review:
-                game = nd.get('game_title', '') or od.get('game_title', '')
-                rating = nd.get('player_rating')
-                rating_str = f"{rating}/10" if rating is not None else ""
-                emoji = "\u2705" if rating and rating >= 5 else "\u274c"
-                line = f"{emoji} <b>{name}</b> оставил рецензию на <b>{game}</b> [{rating_str}]:\n\n<i>{new_review}</i>"
-                review_changes.append(line)
-        if review_changes:
-            changes.append("\U0001f4dd <b>РЕЦЕНЗИИ:</b>\n\n" + "\n\n".join(review_changes))
-
-        action_changes = []
-        game_start_changes = []
-        casino_changes = []
-        for name, nd in new_data.items():
-            if name not in old_data:
-                continue
-            od = old_data[name]
-            old_action = od.get('action_kind', '')
-            new_action = nd.get('action_kind', '')
-            old_auction_status = od.get('auction_status', '')
-            new_auction_status = nd.get('auction_status', '')
-            old_game = od.get('game_title', '')
-            new_game = nd.get('game_title', '')
-            old_game_type = od.get('game_type', 'game')
-            new_game_type = nd.get('game_type', 'game')
-            old_casino = od.get('casino_phase')
-            new_casino = nd.get('casino_phase')
-            in_casino = bool(new_casino)
+            if in_casino and pts_delta != 0:
+                em = "\U0001f49a" if pts_delta > 0 else "\U0001f494"
+                casino_pts_changes.append(f"{em} <b>{name}</b>: {op} \u2192 {np_} ({'+' if pts_delta>0 else ''}{pts_delta})")
 
             if new_auction_status and new_auction_status != old_auction_status:
                 if new_auction_status == 'start':
@@ -1636,38 +1688,44 @@ class NassalMonitor:
                 elif new_auction_status == 'finish':
                     action_changes.append(f"\U0001f3c6 <b>{name}</b>: аукцион завершён")
 
-            if new_casino != old_casino:
-                if new_casino and not old_casino:
-                    casino_changes.append(f"\U0001f3b0 <b>{name}</b> зашёл в казино")
-
             if not in_casino and old_action != new_action:
                 if new_action == 'auction' and old_action != 'auction':
                     action_changes.append(f"\U0001f3af <b>{name}</b> проводит аукцион")
                 elif not new_action and old_action == 'auction':
                     action_changes.append(f"\U0001f3af <b>{name}</b> завершил аукцион")
 
-            old_timer = od.get('timer_started', '')
-            new_timer = nd.get('timer_started', '')
-            new_accumulated = nd.get('timer_accumulated', 0)
-            is_game = old_game_type == 'game' or new_game_type == 'game'
-            if not old_timer and new_timer and new_game and is_game and new_accumulated == 0:
-                game_start_changes.append(f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>")
+            old_review = od.get('player_review')
+            new_review = nd.get('player_review')
+            if new_review and new_review != old_review:
+                game_r = nd.get('game_title', '') or od.get('game_title', '')
+                rating = nd.get('player_rating')
+                rating_str = f"{rating}/10" if rating is not None else ""
+                emoji_r = "\u2705" if rating and rating >= 5 else "\u274c"
+                review_changes.append(f"{emoji_r} <b>{name}</b> оставил рецензию на <b>{game_r}</b> [{rating_str}]:\n\n<i>{new_review}</i>")
 
-            if old_game and not new_game and old_game_type == 'game':
-                old_pts = od.get('points', 0)
-                new_pts = nd.get('points', 0)
-                if new_pts > old_pts:
-                    action_changes.append(f"\u2705 <b>{name}</b> прошёл: <b>{old_game}</b>")
-                else:
-                    action_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул: <b>{old_game}</b>")
-
-
+        if game_end_changes:
+            changes.append("\u2705 <b>ИГРЫ ЗАВЕРШЕНЫ:</b>\n\n" + "\n\n".join(game_end_changes))
 
         if game_start_changes:
-            changes.append("\U0001f3ae <b>ИГРЫ:</b>\n\n" + "\n\n".join(game_start_changes))
+            changes.append("\U0001f3ae <b>ИГРЫ НАЧАТЫ:</b>\n\n" + "\n\n".join(game_start_changes))
+
+        if video_changes:
+            changes.append("\U0001f4fa <b>ВИДЕО:</b>\n\n" + "\n\n".join(video_changes))
+
+        if review_changes:
+            changes.append("\U0001f4dd <b>РЕЦЕНЗИИ:</b>\n\n" + "\n\n".join(review_changes))
+
+        if pts_changes:
+            changes.append("\U0001f4b0 <b>ОЧКИ:</b>\n\n" + "\n\n".join(pts_changes))
+
+        if pos_changes:
+            changes.append("\U0001f4ca <b>ПОЗИЦИИ:</b>\n\n" + "\n\n".join(pos_changes))
 
         if casino_changes:
             changes.append("\U0001f3b0 <b>КАЗИНО:</b>\n\n" + "\n\n".join(casino_changes))
+
+        if casino_pts_changes:
+            changes.append("\U0001f3b2 <b>БАЛЛЫ КАЗИНО:</b>\n\n" + "\n\n".join(casino_pts_changes))
 
         if action_changes:
             changes.append("\U0001f3af <b>АУКЦИОН / РУЛЕТКА:</b>\n\n" + "\n\n".join(action_changes))
