@@ -1579,38 +1579,12 @@ class NassalMonitor:
 
             if is_video:
                 if not old_game and new_game:
-                    hltb_v = nd.get('hltb_seconds', 0)
-                    hltb_id_v = nd.get('hltb_game_id')
-                    year_v = nd.get('release_year')
-                    line_v = f"\U0001f4fa <b>{name}</b> начал смотреть: <b>{new_game}</b>"
-                    if year_v:
-                        line_v += f" ({year_v})"
-                    line_v += "\n"
-                    if hltb_v > 0:
-                        if hltb_id_v:
-                            line_v += f"  \U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_id_v}'>{format_duration(hltb_v)}</a>\n"
-                        else:
-                            line_v += f"  \U0001f552 HLTB: {format_duration(hltb_v)}\n"
-                    video_changes.append(line_v)
+                    video_changes.append(f"\U0001f4fa <b>{name}</b> начал смотреть: <b>{new_game}</b>")
                 elif old_game and not new_game:
-                    elapsed_v = od.get('timer_accumulated', 0)
-                    if old_timer:
-                        elapsed_v += elapsed_since(old_timer)
-                    hltb_v = od.get('hltb_seconds', 0)
-                    hltb_id_v = od.get('hltb_game_id')
                     if pts_delta > 0:
-                        line_v = f"\u2705 <b>{name}</b> посмотрел: <b>{old_game}</b>"
+                        video_changes.append(f"\u2705 <b>{name}</b> посмотрел: <b>{old_game}</b>")
                     else:
-                        line_v = f"\U0001f4a9 <b>{name}</b> дропнул просмотр: <b>{old_game}</b>"
-                    line_v += "\n"
-                    if elapsed_v > 0:
-                        line_v += f"  \u23f1 Время: {format_duration(elapsed_v)}\n"
-                    if hltb_v > 0:
-                        if hltb_id_v:
-                            line_v += f"  \U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_id_v}'>{format_duration(hltb_v)}</a>\n"
-                        else:
-                            line_v += f"  \U0001f552 HLTB: {format_duration(hltb_v)}\n"
-                    video_changes.append(line_v)
+                        video_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул просмотр: <b>{old_game}</b>")
             else:
                 if not old_timer and new_timer and new_game and new_accumulated == 0:
                     hltb = nd.get('hltb_seconds', 0)
@@ -1620,23 +1594,27 @@ class NassalMonitor:
                     review = nd.get('review_score')
                     hltb_id = nd.get('hltb_game_id')
                     steam_id = nd.get('steam_app_id')
+                    fastest_time = nd.get('fastest_time')
+                    fastest_player = nd.get('fastest_player')
 
-                    line = f"\U0001f3ae <b>{name}</b> начал играть: <b>{new_game}</b>"
+                    line = f"\U0001f3ae <b>{new_game}</b>\n"
+                    line += f"Стример: <b>{name}</b>\n\n"
                     if year:
-                        line += f" ({year})"
-                    line += "\n"
+                        line += f"\U0001f4c5 Год: {year}\n"
                     if review is not None:
                         emoji_r = "\U0001f44d" if review >= 75 else ("\U0001f914" if review >= 50 else "\U0001f44e")
-                        line += f"  {emoji_r} Оценка: {review}/100\n"
+                        line += f"{emoji_r} Оценка: {review}/100\n"
                     if hltb > 0:
                         if hltb_id:
-                            line += f"  \U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_id}'>{format_duration(hltb)}</a>\n"
+                            line += f"\U0001f552 HLTB: <a href='https://howlongtobeat.com/game/{hltb_id}'>{format_duration(hltb)}</a>\n"
                         else:
-                            line += f"  \U0001f552 HLTB: {format_duration(hltb)}\n"
+                            line += f"\U0001f552 HLTB: {format_duration(hltb)}\n"
                     if steam_id:
-                        line += f"  \u2699\ufe0f Steam: <a href='https://store.steampowered.com/app/{steam_id}'>магазин</a>\n"
+                        line += f"\u2699\ufe0f Steam: <a href='https://store.steampowered.com/app/{steam_id}'>магазин</a>\n"
+                    if fastest_time and fastest_player:
+                        line += f"\u26a1 Рекорд: {format_duration(fastest_time)} — {fastest_player}\n"
                     if reward or penalty:
-                        line += f"  \U0001f4b0 +{reward} / \U0001f494 -{penalty}\n"
+                        line += f"\n\U0001f4b0 Награда: +{reward}\n\U0001f494 Штраф: -{penalty}\n"
                     game_start_changes.append(line)
 
                 if old_game and not new_game and old_game_type == 'game':
@@ -1683,10 +1661,8 @@ class NassalMonitor:
             if new_auction_status and new_auction_status != old_auction_status:
                 if new_auction_status == 'start':
                     action_changes.append(f"\U0001f3af <b>{name}</b>: аукцион начался")
-                elif new_auction_status == 'timer':
-                    action_changes.append(f"\u23f0 <b>{name}</b>: торги идут")
                 elif new_auction_status == 'finish':
-                    action_changes.append(f"\U0001f3c6 <b>{name}</b>: аукцион завершён")
+                    action_changes.append(f"\U0001f3af <b>{name}</b>: аукцион завершён")
 
             if not in_casino and old_action != new_action:
                 if new_action == 'auction' and old_action != 'auction':
@@ -1702,6 +1678,9 @@ class NassalMonitor:
                 rating_str = f"{rating}/10" if rating is not None else ""
                 emoji_r = "\u2705" if rating and rating >= 5 else "\u274c"
                 review_changes.append(f"{emoji_r} <b>{name}</b> оставил рецензию на <b>{game_r}</b> [{rating_str}]:\n\n<i>{new_review}</i>")
+
+        if action_changes:
+            changes.append("\U0001f3af <b>АУКЦИОН:</b>\n\n" + "\n\n".join(action_changes))
 
         if game_end_changes:
             changes.append("\u2705 <b>ИГРЫ ЗАВЕРШЕНЫ:</b>\n\n" + "\n\n".join(game_end_changes))
@@ -1726,9 +1705,6 @@ class NassalMonitor:
 
         if casino_pts_changes:
             changes.append("\U0001f3b2 <b>БАЛЛЫ КАЗИНО:</b>\n\n" + "\n\n".join(casino_pts_changes))
-
-        if action_changes:
-            changes.append("\U0001f3af <b>АУКЦИОН / РУЛЕТКА:</b>\n\n" + "\n\n".join(action_changes))
 
         return changes
 
