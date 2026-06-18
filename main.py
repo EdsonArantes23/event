@@ -1466,7 +1466,9 @@ class NassalMonitor:
             for name, games in history.items():
                 for game in games:
                     gid = game.get('id', '')
-                    if gid:
+                    review = game.get('playerReview')
+                    rating = game.get('playerRating')
+                    if gid and review and rating is not None:
                         self.seen_review_ids.add(gid)
             self.save_seen_reviews()
         except Exception as e:
@@ -1588,18 +1590,17 @@ class NassalMonitor:
                     game_id = game.get('id', '')
                     review = game.get('playerReview')
                     rating = game.get('playerRating')
-                    if game_id and game_id not in self.seen_review_ids:
+                    if game_id and review and rating is not None and game_id not in self.seen_review_ids:
                         self.seen_review_ids.add(game_id)
-                        if review and rating is not None:
-                            title = game.get('title', '?')
-                            gtype = game.get('type', 'game')
-                            status = game.get('status', '')
-                            emoji_r = "\u2705" if rating >= 5 else "\u274c"
-                            new_reviews.append(
-                                f"{emoji_r} <b>{name}</b> оставил рецензию на <b>{title}</b> [{rating}/10]:\n\n<i>{review}</i>"
-                            )
+                        title = game.get('title', '?')
+                        gtype = game.get('type', 'game')
+                        status = game.get('status', '')
+                        emoji_r = "\u2705" if rating >= 5 else "\u274c"
+                        new_reviews.append(
+                            f"{emoji_r} <b>{name}</b> оставил рецензию на <b>{title}</b> [{rating}/10]:\n\n<i>{review}</i>"
+                        )
             if new_reviews:
-                msg = "<b>\U0001f4dd \u0420\u0415\u0426\u0415\u041d\u0417\u0418\u0418:</b>\n\n" + "\n\n".join(new_reviews)
+                msg = "<b>\U0001f4dd РЕЦЕНЗИИ:</b>\n\n" + "\n\n".join(new_reviews)
                 await self.send_notification(msg)
                 self.save_seen_reviews()
         except Exception as e:
@@ -1627,7 +1628,6 @@ class NassalMonitor:
         game_end_changes = []
         game_start_changes = []
         video_changes = []
-        review_changes = []
         pts_changes = []
         pos_changes = []
         casino_changes = []
@@ -1747,15 +1747,6 @@ class NassalMonitor:
                 elif not new_action and old_action in ('auction', 'content-start'):
                     action_changes.append(f"\U0001f3af <b>{name}</b> завершил аукцион")
 
-            old_review = od.get('player_review')
-            new_review = nd.get('player_review')
-            if new_review and new_review != old_review:
-                game_r = nd.get('game_title', '') or od.get('game_title', '')
-                rating = nd.get('player_rating')
-                rating_str = f"{rating}/10" if rating is not None else ""
-                emoji_r = "\u2705" if rating and rating >= 5 else "\u274c"
-                review_changes.append(f"{emoji_r} <b>{name}</b> оставил рецензию на <b>{game_r}</b> [{rating_str}]:\n\n<i>{new_review}</i>")
-
         if action_changes:
             changes.append("\U0001f3af <b>АУКЦИОН:</b>\n\n" + "\n\n".join(action_changes))
 
@@ -1767,9 +1758,6 @@ class NassalMonitor:
 
         if video_changes:
             changes.append("\U0001f4fa <b>ВИДЕО:</b>\n\n" + "\n\n".join(video_changes))
-
-        if review_changes:
-            changes.append("\U0001f4dd <b>РЕЦЕНЗИИ:</b>\n\n" + "\n\n".join(review_changes))
 
         if pts_changes:
             changes.append("\U0001f4b0 <b>ОЧКИ:</b>\n\n" + "\n\n".join(pts_changes))
