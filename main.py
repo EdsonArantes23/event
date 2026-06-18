@@ -1656,8 +1656,10 @@ class NassalMonitor:
 
             is_video = old_game_type not in ('game', '') or new_game_type not in ('game', '')
 
+            new_accumulated = nd.get('timer_accumulated', 0)
+
             if is_video:
-                if not old_timer and new_timer and new_game:
+                if not old_timer and new_timer and new_game and new_accumulated <= 3:
                     video_changes.append(f"\U0001f4fa <b>{name}</b> начал смотреть: <b>{new_game}</b>")
                 elif old_game and not new_game:
                     if pts_delta > 0:
@@ -1665,7 +1667,7 @@ class NassalMonitor:
                     else:
                         video_changes.append(f"\U0001f4a9 <b>{name}</b> дропнул просмотр: <b>{old_game}</b>")
             else:
-                if not old_timer and new_timer and new_game:
+                if not old_timer and new_timer and new_game and new_accumulated <= 3:
                     hltb = nd.get('hltb_seconds', 0)
                     reward = nd.get('game_reward', 0)
                     penalty = nd.get('game_penalty', 0)
