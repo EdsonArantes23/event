@@ -28,7 +28,9 @@ VALID_NAMES = {name.lower().strip() for name in STREAMERS.values()}
 
 API_URL = "https://api-game.nassal.pro/api/public/player/list"
 ACHIEVEMENTS_URL = "https://api-game.nassal.pro/api/public/achievements"
+AUCTION_HISTORY_URL = "https://api-game.nassal.pro/api/public/player/{player_id}/auction-results-history"
 GROUPS_FILE = "monitoring_groups.json"
+REVIEWS_FILE = "seen_reviews.json"
 ADMINS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "417850992").split(",") if x.strip().isdigit()]
 
 EVENT_END_MSK = datetime(2026, 6, 19, 19, 0, 0)
@@ -96,6 +98,7 @@ class NassalMonitor:
         self.API_CACHE_TTL = 15
         self.event_sent_notifications: set = set()
         self.event_end_msk: datetime = EVENT_END_MSK
+        self.seen_review_ids: set = self.load_seen_reviews()
 
     def _now_msk(self) -> datetime:
         return datetime.now(timezone.utc) + MSK_OFFSET
@@ -171,6 +174,22 @@ class NassalMonitor:
                 json.dump(self.monitoring_groups, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"Error saving groups: {e}")
+
+    def load_seen_reviews(self) -> set:
+        try:
+            if os.path.exists(REVIEWS_FILE):
+                with open(REVIEWS_FILE, 'r', encoding='utf-8') as f:
+                    return set(json.load(f))
+        except Exception as e:
+            logger.error(f"Error loading seen reviews: {e}")
+        return set()
+
+    def save_seen_reviews(self):
+        try:
+            with open(REVIEWS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(list(self.seen_review_ids), f, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Error saving seen reviews: {e}")
 
     def is_admin(self, user_id: int) -> bool:
         return user_id in ADMINS
@@ -370,6 +389,30 @@ class NassalMonitor:
             logger.error(f"Error getting data: {e}", exc_info=True)
             return self.api_cache or {}
 
+    async def get_auction_history(self) -> Dict[str, List[Dict]]:
+        result: Dict[str, List[Dict]] = {}
+        try:
+            data = await self.get_participants_data()
+            name_to_id: Dict[str, str] = {}
+            for pid, pc in self.player_cache.items():
+                name_to_id[pc['name']] = pid
+            for name in data:
+                player_id = name_to_id.get(name, '')
+                if not player_id:
+                    continue
+                url = AUCTION_HISTORY_URL.format(player_id=player_id)
+                try:
+                    async with self.session.get(url) as resp:
+                        if resp.status == 200:
+                            resp_data = await resp.json()
+                            games = resp_data.get('data', {}).get('array', [])
+                            result[name] = games
+                except Exception as e:
+                    logger.warning(f"Error getting auction history for {name}: {e}")
+        except Exception as e:
+            logger.error(f"Error getting auction history: {e}")
+        return result
+
     async def get_achievements_data(self) -> Dict:
         now = time.time()
         if self.achievements_cache and (now - self.achievements_cache_time) < 300:
@@ -500,7 +543,7 @@ class NassalMonitor:
             prefix = "\U0001f3ae" if game_type == 'game' else "\U0001f4fa"
             label = "Категория" if game_type == 'game' else "Смотрит"
             return f"{prefix} {label}: {game_title}{reward_str}"
-        elif action_kind and action_kind == 'auction':
+        elif action_kind and action_kind in ('auction', 'content-start'):
             return "\U0001f3af Категория: Аукцион"
         elif casino_phase:
             return "\U0001f3b0 Категория: В казино"
@@ -626,7 +669,7 @@ class NassalMonitor:
                     msg += f"\n\U0001f4b0 <b>Награда:</b> +{game_reward}\n"
                     msg += f"\U0001f494 <b>Штраф:</b> -{game_penalty}\n"
 
-            elif action_kind and action_kind == 'auction':
+            elif action_kind and action_kind in ('auction', 'content-start'):
                 msg += f"\n\U0001f3af <b>Действие:</b> Аукцион\n"
             elif casino_phase:
                 msg += f"\n\U0001f3b0 <b>Действие:</b> В казино\n"
@@ -952,7 +995,7 @@ class NassalMonitor:
                         if rw or pn:
                             text += f"  \U0001f4b0 +{rw} / -{pn}\n"
                         text += "\n"
-                    elif action and action == 'auction':
+                    elif action and action in ('auction', 'content-start'):
                         text += f"  \U0001f3af Аукцион\n\n"
                     elif info.get('casino_phase'):
                         text += f"  \U0001f3b0 В казино\n\n"
@@ -1418,6 +1461,17 @@ class NassalMonitor:
             return
         self.previous_data = initial_data
 
+        try:
+            history = await self.get_auction_history()
+            for name, games in history.items():
+                for game in games:
+                    gid = game.get('id', '')
+                    if gid:
+                        self.seen_review_ids.add(gid)
+            self.save_seen_reviews()
+        except Exception as e:
+            logger.error(f"Error preloading review IDs: {e}")
+
         while self.monitoring_active:
             try:
                 self.api_cache = None
@@ -1429,6 +1483,7 @@ class NassalMonitor:
                 if current_data:
                     self.previous_data = current_data
                 await self._check_event_notifications()
+                await self._check_new_reviews()
             except Exception as e:
                 logger.error(f"Error: {e}")
             await asyncio.sleep(10)
@@ -1523,6 +1578,32 @@ class NassalMonitor:
                         )
                     await self.send_notification(text)
                     logger.info(f"Daily countdown sent ({days_left} days left)")
+
+    async def _check_new_reviews(self):
+        try:
+            history = await self.get_auction_history()
+            new_reviews = []
+            for name, games in history.items():
+                for game in games:
+                    game_id = game.get('id', '')
+                    review = game.get('playerReview')
+                    rating = game.get('playerRating')
+                    if game_id and game_id not in self.seen_review_ids:
+                        self.seen_review_ids.add(game_id)
+                        if review and rating is not None:
+                            title = game.get('title', '?')
+                            gtype = game.get('type', 'game')
+                            status = game.get('status', '')
+                            emoji_r = "\u2705" if rating >= 5 else "\u274c"
+                            new_reviews.append(
+                                f"{emoji_r} <b>{name}</b> оставил рецензию на <b>{title}</b> [{rating}/10]:\n\n<i>{review}</i>"
+                            )
+            if new_reviews:
+                msg = "<b>\U0001f4dd \u0420\u0415\u0426\u0415\u041d\u0417\u0418\u0418:</b>\n\n" + "\n\n".join(new_reviews)
+                await self.send_notification(msg)
+                self.save_seen_reviews()
+        except Exception as e:
+            logger.error(f"Error checking reviews: {e}")
 
     def _build_leaderboard_table(self, data: Dict) -> str:
         leaderboard = self._get_leaderboard(data)
@@ -1660,9 +1741,9 @@ class NassalMonitor:
                     action_changes.append(f"\U0001f3af <b>{name}</b>: аукцион завершён")
 
             if not in_casino and old_action != new_action:
-                if new_action == 'auction' and old_action != 'auction':
+                if new_action in ('auction', 'content-start') and old_action not in ('auction', 'content-start'):
                     action_changes.append(f"\U0001f3af <b>{name}</b> проводит аукцион")
-                elif not new_action and old_action == 'auction':
+                elif not new_action and old_action in ('auction', 'content-start'):
                     action_changes.append(f"\U0001f3af <b>{name}</b> завершил аукцион")
 
             old_review = od.get('player_review')
